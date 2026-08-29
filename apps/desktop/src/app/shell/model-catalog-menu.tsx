@@ -72,6 +72,10 @@ export interface ModelChoice {
  * Returning `{}` is fine — the row then shows Hermes' defaults.
  */
 export interface ModelMenuController {
+  /** Whether detached/non-active rows may edit reasoning effort. Surfaces whose
+   * effort belongs to a live session set this false; detached task editors keep
+   * the default true. */
+  allowInactiveEffort?: boolean
   /** Restore a model's remembered settings after it is selected. Separate from
    *  `setOptions` because it is one atomic "apply this model's preset" write,
    *  not a user editing one control — surfaces that write through to a session
@@ -477,7 +481,7 @@ export function ModelCatalogMenu({
                             })
                           }
                           provider={group.provider.slug}
-                          reasoning={caps?.reasoning ?? true}
+                          reasoning={(caps?.reasoning ?? true) && (isCurrent || controller.allowInactiveEffort !== false)}
                         />
                       </DropdownMenuSub>
                     )

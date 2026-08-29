@@ -133,9 +133,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
       sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: next }))
     }
 
-    // Preset-only without a session: the gateway's `config.set` falls back to
-    // global config when none matches — so don't reach it (preset + optimistic
-    // store are the whole effect).
+    // Draft-only without a session: the gateway's `config.set` falls back to
+    // global config when none matches, so the optimistic composer state is the
+    // whole effect until session.create carries it into the new session.
     if (!activeSessionId) {
       return
     }
@@ -184,6 +184,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   }
 
   const controller: ModelMenuController = {
+    allowInactiveEffort: false,
     // Selecting a model row restores only globally reusable options (currently
     // fast mode). Reasoning effort stays on the session that owns it.
     applyPreset: (preset, row) => {

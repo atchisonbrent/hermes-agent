@@ -9,14 +9,14 @@ import { sessionTileDelegate } from './session-states'
 const STORAGE_KEY = 'hermes.desktop.model-presets'
 
 /** Per-model fast-mode preset, remembered globally across sessions and
- * re-applied whenever that model is selected. Reasoning effort deliberately
- * does not live here: it is session state, and persisting it by model caused an
- * effort change in one conversation to bleed into every other conversation
- * using that model. `effort` remains accepted on the boundary so older callers
- * and stored records migrate without a flag day, but it is never persisted. */
+ * re-applied whenever that model is selected. Reasoning effort is session state
+ * and deliberately absent from this persisted shape. */
 export interface ModelPreset {
-  effort?: string
   fast?: boolean
+}
+
+interface ModelRuntimeOptions extends ModelPreset {
+  effort?: string
 }
 
 type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -24,8 +24,14 @@ type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => P
 /** Stable `provider::model` key (matches the visibility-store format). */
 export const modelPresetKey = (provider: string, model: string): string => `${provider}::${model}`
 
-function fastOnly(preset: ModelPreset | undefined): ModelPreset {
-  return preset?.fast === undefined ? {} : { fast: preset.fast }
+function fastOnly(preset: unknown): ModelPreset {
+  if (!preset || typeof preset !== 'object' || Array.isArray(preset)) {
+    return {}
+  }
+
+  const fast = (preset as { fast?: unknown }).fast
+
+  return typeof fast === 'boolean' ? { fast } : {}
 }
 
 function load(): Record<string, ModelPreset> {
@@ -43,7 +49,7 @@ function load(): Record<string, ModelPreset> {
     }
 
     return Object.fromEntries(
-      Object.entries(parsed as Record<string, ModelPreset>)
+      Object.entries(parsed as Record<string, unknown>)
         .map(([key, preset]) => [key, fastOnly(preset)] as const)
         .filter(([, preset]) => preset.fast !== undefined)
     )
@@ -80,7 +86,7 @@ export function setModelPreset(provider: string, model: string, patch: ModelPres
  *  `primary: false` scopes the optimistic write to the tile's session slice —
  *  a tile's picker must not clobber the primary composer's effort/fast. */
 export async function applyModelPreset(
-  { effort, fast }: ModelPreset,
+  { effort, fast }: ModelRuntimeOptions,
   ctx: { failMessage: string; primary?: boolean; request: RequestGateway; sessionId: null | string }
 ): Promise<void> {
   if (ctx.primary ?? true) {

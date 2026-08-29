@@ -42,7 +42,7 @@ afterEach(() => {
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu() {
+function renderMenu(overrides: Partial<ModelMenuController> = {}) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
@@ -50,7 +50,8 @@ function renderMenu() {
     current: { effort: '', fast: false, model: '', provider: '' },
     presetFor: () => ({}),
     select,
-    setOptions: vi.fn()
+    setOptions: vi.fn(),
+    ...overrides
   }
 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -95,6 +96,22 @@ describe('the catalog owns model curation', () => {
     await vi.waitFor(() => {
       expect(screen.queryByText(/Gemini 3\.1 Pro/i)).not.toBeNull()
     })
+  })
+
+  it('hides session-owned effort controls on inactive rows', async () => {
+    renderMenu({
+      allowInactiveEffort: false,
+      current: { effort: 'high', fast: false, model: 'gemini-2.5-flash', provider: 'google' }
+    })
+
+    const inactive = await screen.findByText(/Gemini 3\.1 Pro/i)
+    const trigger = inactive.closest<HTMLElement>('[role="menuitem"]')
+    expect(trigger).not.toBeNull()
+    trigger!.focus()
+    fireEvent.keyDown(trigger!, { key: 'ArrowRight' })
+
+    await screen.findByText('No options for this model')
+    expect(screen.queryByText('Effort')).toBeNull()
   })
 
   it('offers Edit Models without the host wiring it up', async () => {

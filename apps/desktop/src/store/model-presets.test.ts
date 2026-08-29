@@ -1,20 +1,35 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $modelPresets, applyModelPreset, getModelPreset, modelPresetKey, setModelPreset } from './model-presets'
 import { $currentFastMode, $currentReasoningEffort, setCurrentFastMode, setCurrentReasoningEffort } from './session'
 
 describe('model presets', () => {
   beforeEach(() => {
+    window.localStorage.removeItem('hermes.desktop.model-presets')
     $modelPresets.set({})
     setCurrentFastMode(false)
     setCurrentReasoningEffort('')
   })
 
-  it('keeps fast as a model preset but never persists session reasoning effort globally', () => {
-    setModelPreset('anthropic', 'claude-opus-4-8', { effort: 'high' })
+  it('persists fast mode without any global reasoning field', () => {
     setModelPreset('anthropic', 'claude-opus-4-8', { fast: true })
 
     expect(getModelPreset('anthropic', 'claude-opus-4-8')).toEqual({ fast: true })
+  })
+
+  it('drops reasoning effort from legacy localStorage presets during load', async () => {
+    window.localStorage.setItem(
+      'hermes.desktop.model-presets',
+      JSON.stringify({
+        'anthropic::claude-opus-4-8': { effort: 'high', fast: true },
+        'openai::gpt-5.6': { effort: 'max' }
+      })
+    )
+    vi.resetModules()
+
+    const loaded = await import('./model-presets')
+
+    expect(loaded.$modelPresets.get()).toEqual({ 'anthropic::claude-opus-4-8': { fast: true } })
   })
 
   it('returns an empty preset for unknown models', () => {
