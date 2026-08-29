@@ -3128,6 +3128,13 @@ def cmd_chat(args):
 
     _apply_safe_mode(args)
 
+    # ``--session-db`` is an integration boundary: configuration, rules, skills,
+    # and credentials still resolve from HERMES_HOME, while every SessionDB()
+    # opened by this process uses the explicit durable store. Set it before
+    # resume/title resolution or any import that may construct SessionDB.
+    if session_db := str(getattr(args, "session_db", None) or "").strip():
+        os.environ["HERMES_SESSION_DB_PATH"] = str(Path(session_db).expanduser().resolve())
+
     # --in DIR: run in DIR. Must happen before any session resolution so the
     # workspace-scoped "latest"/-c lookups key off DIR, and it pins the
     # session there — an explicit --in wins over a resumed session's

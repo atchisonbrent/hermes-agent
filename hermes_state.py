@@ -399,11 +399,17 @@ def _default_db_path() -> Path:
 
     Precedence:
 
-    1. A deliberately re-pointed ``DEFAULT_DB_PATH`` (differs from the
+    1. ``HERMES_SESSION_DB_PATH`` when set by the explicit ``--session-db``
+       CLI integration flag. This intentionally separates durable conversation
+       state from an isolated ``HERMES_HOME`` configuration sandbox.
+    2. A deliberately re-pointed ``DEFAULT_DB_PATH`` (differs from the
        import-time snapshot — the established test escape hatch) wins.
-    2. Otherwise resolve ``get_hermes_home()`` fresh so a runtime
+    3. Otherwise resolve ``get_hermes_home()`` fresh so a runtime
        ``HERMES_HOME`` redirect takes effect regardless of import order.
     """
+    override = os.getenv("HERMES_SESSION_DB_PATH", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
     if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH:
         return DEFAULT_DB_PATH
     return get_hermes_home() / "state.db"
