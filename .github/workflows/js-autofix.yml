@@ -57,6 +57,9 @@ concurrency:
 jobs:
   generate-patch:
     name: Generate eslint --fix patch
+    # This is NousResearch's trusted mutation workflow. Forks still run the
+    # blocking JS/TS checks in CI, but do not create bot branches or PRs.
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:

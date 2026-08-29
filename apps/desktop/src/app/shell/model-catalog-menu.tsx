@@ -481,7 +481,9 @@ export function ModelCatalogMenu({
                             })
                           }
                           provider={group.provider.slug}
-                          reasoning={(caps?.reasoning ?? true) && (isCurrent || controller.allowInactiveEffort !== false)}
+                          reasoning={
+                            (caps?.reasoning ?? true) && (isCurrent || controller.allowInactiveEffort !== false)
+                          }
                         />
                       </DropdownMenuSub>
                     )
