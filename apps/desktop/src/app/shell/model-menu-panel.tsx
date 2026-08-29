@@ -45,8 +45,9 @@ interface ModelMenuPanelProps {
 /**
  * The composer's model menu: `ModelCatalogMenu` (the shared renderer) plus the
  * controller that gives a selection its meaning HERE — write through to this
- * surface's session, remember the pick as a global preset, keep the optimistic
- * stores honest, and roll back on a failed gateway write.
+ * surface's session, remember fast mode as a global model preset, keep the
+ * optimistic stores honest, and roll back on a failed gateway write. Reasoning
+ * effort remains owned by the session that selected it.
  */
 export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', requestGateway }: ModelMenuPanelProps) {
   const { t } = useI18n()
@@ -124,7 +125,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   }
 
   // Push a reasoning change onto the session that owns it, with rollback.
-  const patchReasoning = async (next: string, previous: string, provider: string, model: string) => {
+  const patchReasoning = async (next: string, previous: string) => {
     if (touchesPrimary) {
       markComposerSelectionManual()
       setCurrentReasoningEffort(next)
@@ -148,7 +149,6 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
         sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: previous }))
       }
 
-      setModelPreset(provider, model, { effort: previous })
       notifyError(err, t.shell.modelOptions.updateFailed)
     }
   }
@@ -184,8 +184,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   }
 
   const controller: ModelMenuController = {
-    // Selecting a model row restores that model's remembered preset onto the
-    // session (effort/fast). applyModelPreset owns the batched gateway write.
+    // Selecting a model row restores only globally reusable options (currently
+    // fast mode). Reasoning effort stays on the session that owns it.
     applyPreset: (preset, row) => {
       setModelPreset(row.provider, row.model, preset)
 
@@ -213,12 +213,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     select: (model, provider) => onSelectModel({ model, provider, sessionId: activeSessionId || null }),
 
     setOptions: (patch, row) => {
-      // Editing always records the model's global preset (keyed by
-      // provider::model, not per-surface — a tile edit re-applies to that model
-      // everywhere); the active model also gets it pushed onto its OWN session.
-      // Non-active edits stay preset-only — no model switch, no session write.
-      if (patch.effort !== undefined || patch.fast !== undefined) {
-        setModelPreset(row.provider, row.model, patch)
+      // Fast mode is a reusable per-model preset. Reasoning is written only to
+      // the active session below; an inactive row has no session to own it.
+      if (patch.fast !== undefined) {
+        setModelPreset(row.provider, row.model, { fast: patch.fast })
       }
 
       if (!row.isActive) {
@@ -226,7 +224,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
       }
 
       if (patch.effort !== undefined) {
-        void patchReasoning(patch.effort, currentReasoningEffort, row.provider, row.model)
+        void patchReasoning(patch.effort, currentReasoningEffort)
       }
 
       if (patch.fast !== undefined) {

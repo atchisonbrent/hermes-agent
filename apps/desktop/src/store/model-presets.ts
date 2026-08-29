@@ -8,9 +8,12 @@ import { sessionTileDelegate } from './session-states'
 
 const STORAGE_KEY = 'hermes.desktop.model-presets'
 
-/** Per-model reasoning/fast preset, remembered globally across sessions and
- *  re-applied to the session whenever that model is selected. Unset dimensions
- *  fall back to the Hermes default (medium effort, no fast). */
+/** Per-model fast-mode preset, remembered globally across sessions and
+ * re-applied whenever that model is selected. Reasoning effort deliberately
+ * does not live here: it is session state, and persisting it by model caused an
+ * effort change in one conversation to bleed into every other conversation
+ * using that model. `effort` remains accepted on the boundary so older callers
+ * and stored records migrate without a flag day, but it is never persisted. */
 export interface ModelPreset {
   effort?: string
   fast?: boolean
@@ -20,6 +23,10 @@ type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => P
 
 /** Stable `provider::model` key (matches the visibility-store format). */
 export const modelPresetKey = (provider: string, model: string): string => `${provider}::${model}`
+
+function fastOnly(preset: ModelPreset | undefined): ModelPreset {
+  return preset?.fast === undefined ? {} : { fast: preset.fast }
+}
 
 function load(): Record<string, ModelPreset> {
   const raw = storedString(STORAGE_KEY)
@@ -31,7 +38,15 @@ function load(): Record<string, ModelPreset> {
   try {
     const parsed = JSON.parse(raw)
 
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, ModelPreset>) : {}
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, ModelPreset>)
+        .map(([key, preset]) => [key, fastOnly(preset)] as const)
+        .filter(([, preset]) => preset.fast !== undefined)
+    )
   } catch {
     return {}
   }
@@ -40,13 +55,17 @@ function load(): Record<string, ModelPreset> {
 export const $modelPresets = atom<Record<string, ModelPreset>>(load())
 
 export function getModelPreset(provider: string, model: string): ModelPreset {
-  return $modelPresets.get()[modelPresetKey(provider, model)] ?? {}
+  return fastOnly($modelPresets.get()[modelPresetKey(provider, model)])
 }
 
-/** Merge a partial preset for one model and persist. */
+/** Merge the globally reusable fast dimension for one model and persist. */
 export function setModelPreset(provider: string, model: string, patch: ModelPreset): void {
+  if (patch.fast === undefined) {
+    return
+  }
+
   const key = modelPresetKey(provider, model)
-  const next = { ...$modelPresets.get(), [key]: { ...$modelPresets.get()[key], ...patch } }
+  const next = { ...$modelPresets.get(), [key]: { fast: patch.fast } }
 
   $modelPresets.set(next)
   persistString(STORAGE_KEY, JSON.stringify(next))

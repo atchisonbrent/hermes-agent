@@ -10,11 +10,11 @@ describe('model presets', () => {
     setCurrentReasoningEffort('')
   })
 
-  it('round-trips a preset and merges patches without dropping prior fields', () => {
+  it('keeps fast as a model preset but never persists session reasoning effort globally', () => {
     setModelPreset('anthropic', 'claude-opus-4-8', { effort: 'high' })
     setModelPreset('anthropic', 'claude-opus-4-8', { fast: true })
 
-    expect(getModelPreset('anthropic', 'claude-opus-4-8')).toEqual({ effort: 'high', fast: true })
+    expect(getModelPreset('anthropic', 'claude-opus-4-8')).toEqual({ fast: true })
   })
 
   it('returns an empty preset for unknown models', () => {
