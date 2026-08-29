@@ -3128,12 +3128,15 @@ def cmd_chat(args):
 
     _apply_safe_mode(args)
 
+    from tools.environments.local import _msys_to_windows_path
+
     # ``--session-db`` is an integration boundary: configuration, rules, skills,
     # and credentials still resolve from HERMES_HOME, while every SessionDB()
     # opened by this process uses the explicit durable store. Set it before
     # resume/title resolution or any import that may construct SessionDB.
     if session_db := str(getattr(args, "session_db", None) or "").strip():
-        os.environ["HERMES_SESSION_DB_PATH"] = str(Path(session_db).expanduser().resolve())
+        resolved_db = Path(_msys_to_windows_path(session_db)).expanduser().resolve()
+        os.environ["HERMES_SESSION_DB_PATH"] = str(resolved_db)
 
     # --in DIR: run in DIR. Must happen before any session resolution so the
     # workspace-scoped "latest"/-c lookups key off DIR, and it pins the
@@ -3145,8 +3148,6 @@ def cmd_chat(args):
         # `/c/Users/x` before Python ever sees it; MSYS2's path conversion is
         # disabled for native executables). Translate the MSYS/Cygwin/WSL
         # drive-root spellings to native Windows form first — no-op elsewhere.
-        from tools.environments.local import _msys_to_windows_path
-
         _target_dir = os.path.abspath(
             os.path.expanduser(_msys_to_windows_path(in_dir))
         )

@@ -244,6 +244,17 @@ def build_top_level_parser():
             "recorded-cwd restore)."
         ),
     )
+    _inherited_flag(
+        parser,
+        "--session-db",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Persist this invocation to PATH instead of HERMES_HOME/state.db. "
+            "Intended for integrations that isolate configuration with HERMES_HOME "
+            "but keep user-visible session history in the normal profile store."
+        ),
+    )
     parser.add_argument(
         "--continue",
         "-c",
@@ -583,9 +594,10 @@ def build_top_level_parser():
         default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",
     )
-    chat_parser.add_argument(
+    _inherited_flag(
+        chat_parser,
         "--session-db",
-        default=None,
+        default=argparse.SUPPRESS,
         metavar="PATH",
         help="Persist this chat to PATH instead of HERMES_HOME/state.db. Intended for integrations that isolate configuration with HERMES_HOME but keep user-visible session history in the normal profile store.",
     )

@@ -269,6 +269,11 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # hermes_constants home-resolution helpers prefer them over monkeypatched
     # HOME (test_subprocess_home_isolation red locally, green on CI).
     "HERMES_REAL_HOME",
+    # A parent integration may separate session persistence from HERMES_HOME.
+    # Tests re-pin hermes_state.DEFAULT_DB_PATH to their own temp root; scrub the
+    # inherited process override as defense in depth so subprocess-launched
+    # suites cannot write fixtures to the integration's durable database.
+    "HERMES_SESSION_DB_PATH",
     "TERMINAL_HOME_MODE",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
