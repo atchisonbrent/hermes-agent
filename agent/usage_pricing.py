@@ -563,6 +563,367 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-07",
     ),
+    # ── W&B Inference (api.inference.wandb.ai) hosted models ─────────────
+    # Snapshot of https://wandb.ai/site/pricing/tokens/ (2026-08-28); all
+    # prices per 1M tokens. W&B publishes input, output, and cache-hit
+    # (cache-read) only — no separate cache-write rate, so none is set.
+    # These W&B-hosted rates differ from each vendor's direct API pricing
+    # (W&B marks up most Pro-tier models). Keyed on the full vendor-prefixed
+    # model id because the wandb billing route preserves it.
+    # Re-apply after `hermes update` (source patch, not a config change).
+    (
+        "wandb",
+        "zai-org/glm-5.2",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.76"),
+        output_cost_per_million=Decimal("2.42"),
+        cache_read_cost_per_million=Decimal("0.14"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "zai-org/glm-5.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "deepseek-ai/deepseek-v4-flash-0731",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.13"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.07"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "deepseek-ai/deepseek-v4-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.07"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "deepseek-ai/deepseek-v4-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.15"),
+        output_cost_per_million=Decimal("2.55"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "deepseek-ai/deepseek-v4-pro-0813",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.31"),
+        output_cost_per_million=Decimal("3.96"),
+        cache_read_cost_per_million=Decimal("0.044"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "nvidia/nvidia-nemotron-3-ultra-550b-a55b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.75"),
+        output_cost_per_million=Decimal("2.75"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "moonshotai/kimi-k2.7-code",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.71"),
+        output_cost_per_million=Decimal("3.50"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "moonshotai/kimi-k2.6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.65"),
+        output_cost_per_million=Decimal("3.41"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "moonshotai/kimi-k2.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.60"),
+        output_cost_per_million=Decimal("3.00"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "minimaxai/minimax-m3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.23"),
+        output_cost_per_million=Decimal("0.96"),
+        cache_read_cost_per_million=Decimal("0.05"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "qwen/qwen3.6-27b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.60"),
+        output_cost_per_million=Decimal("3.60"),
+        cache_read_cost_per_million=Decimal("0.12"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "qwen/qwen3.5-27b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.39"),
+        output_cost_per_million=Decimal("3.12"),
+        cache_read_cost_per_million=Decimal("0.08"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "zai-org/glm-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("3.20"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "deepseek-ai/deepseek-v3.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.55"),
+        output_cost_per_million=Decimal("1.65"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "nvidia/nvidia-nemotron-3.5-lightning-30b-a3b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.20"),
+        output_cost_per_million=Decimal("0.80"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "nvidia/nvidia-nemotron-3-super-120b-a12b-fp8",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.20"),
+        output_cost_per_million=Decimal("0.80"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "minimaxai/minimax-m2.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "qwen/qwen3.6-35b-a3b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "qwen/qwen3.5-35b-a3b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "qwen/qwen3-coder-480b-a35b-instruct",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("1.50"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "qwen/qwen3-30b-a3b-instruct-2507",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.10"),
+        output_cost_per_million=Decimal("0.30"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "qwen/qwen3-235b-a22b-thinking-2507",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.10"),
+        output_cost_per_million=Decimal("0.10"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "qwen/qwen3-235b-a22b-instruct-2507",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.10"),
+        output_cost_per_million=Decimal("0.10"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "google/gemma-4-31b-it",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.10"),
+        output_cost_per_million=Decimal("0.34"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "openai/gpt-oss-120b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.03"),
+        output_cost_per_million=Decimal("0.17"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "openai/gpt-oss-20b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.03"),
+        output_cost_per_million=Decimal("0.13"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "meta-llama/llama-3.3-70b-instruct",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.71"),
+        output_cost_per_million=Decimal("0.71"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "meta-llama/llama-3.1-70b-instruct",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("0.80"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "meta-llama/llama-3.1-8b-instruct",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.22"),
+        output_cost_per_million=Decimal("0.22"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "ibm-granite/granite-4.1-8b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.05"),
+        output_cost_per_million=Decimal("0.10"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "jetbrains/mellum2-12b-a2.5b-instruct",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.05"),
+        output_cost_per_million=Decimal("0.10"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "microsoft/phi-4-mini-instruct",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.08"),
+        output_cost_per_million=Decimal("0.35"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
+    (
+        "wandb",
+        "openpipe/qwen3-14b-instruct",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.05"),
+        output_cost_per_million=Decimal("0.22"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/site/pricing/tokens/",
+        pricing_version="wandb-pricing-2026-08",
+    ),
     # Google Gemini
     (
         "google",
@@ -1120,6 +1481,15 @@ def resolve_billing_route(
         # Fireworks model ids look like accounts/fireworks/models/<name>;
         # rsplit("/", 1)[-1] yields just <name> which is what the dict keys on.
         return BillingRoute(provider="fireworks", model=model.rsplit("/", 1)[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name == "wandb" or base_url_host_matches(base_url or "", "api.inference.wandb.ai"):
+        # W&B Inference hosts many third-party models under vendor-prefixed
+        # ids (deepseek-ai/…, zai-org/…, qwen/…). Preserve the full model id
+        # so the ("wandb", <vendor>/<model>) pricing keys match; strip only a
+        # redundant leading "wandb/" alias prefix if one is present.
+        m = model
+        if m.lower().startswith("wandb/"):
+            m = m.split("/", 1)[1]
+        return BillingRoute(provider="wandb", model=m, base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
