@@ -1528,6 +1528,13 @@ def init_agent(
         except Exception:
             logger.debug("custom-provider TLS resolution skipped", exc_info=True)
 
+        from agent.auxiliary_client import _apply_wandb_project_header
+
+        _apply_wandb_project_header(
+            client_kwargs,
+            str(client_kwargs.get("base_url") or agent.base_url or ""),
+        )
+
         agent.api_key = client_kwargs.get("api_key", "")
         agent.base_url = client_kwargs.get("base_url", agent.base_url)
         try:

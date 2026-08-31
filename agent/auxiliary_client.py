@@ -260,6 +260,22 @@ def _openai_http_client_kwargs(
         return {}
     return {"http_client": client}
 
+
+_WANDB_INFERENCE_HOST = "api.inference.wandb.ai"
+_WANDB_PROJECT = "cw-wb/storage"
+
+
+def _apply_wandb_project_header(client_kwargs: Dict[str, Any], base_url: str) -> None:
+    """Force project attribution on every OpenAI-compatible W&B request."""
+    if (urlparse(base_url).hostname or "").lower() != _WANDB_INFERENCE_HOST:
+        return
+    headers = dict(client_kwargs.get("default_headers") or {})
+    for key in tuple(headers):
+        if key.lower() == "openai-project":
+            del headers[key]
+    headers["OpenAI-Project"] = _WANDB_PROJECT
+    client_kwargs["default_headers"] = headers
+
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     if _aux_probe_active():
         # Availability probe: credentials/base_url resolved — that is the
@@ -281,6 +297,7 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
             kwargs["default_headers"] = merged
     except Exception:
         pass
+    _apply_wandb_project_header(kwargs, base_url)
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns auxiliary retry + provider/model fallback policy (the
     # same-provider transient retry in call_llm plus the except-chain
@@ -6459,6 +6476,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
+    _apply_wandb_project_header(async_kwargs, sync_base_url)
     _apply_required_codex_headers(
         async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url,
     )

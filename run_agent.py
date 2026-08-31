@@ -6400,6 +6400,12 @@ class AIAgent:
             except Exception:
                 logger.debug("custom-provider extra_headers skipped", exc_info=True)
 
+        # Fork policy: every request to W&B inference is attributed to Brent's
+        # storage project, even if provider config is absent or malformed.
+        from agent.auxiliary_client import _apply_wandb_project_header
+
+        _apply_wandb_project_header(self._client_kwargs, base_url)
+
     def _apply_user_default_headers(self) -> None:
         """Merge user-configured request headers onto the OpenAI client.
 
