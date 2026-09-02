@@ -325,6 +325,7 @@ def _append_entry(entry: LedgerEntry) -> bool:
                 continue  # provably dead → prune
             pruned.append(e)
         pruned.append(asdict(entry))
+        tmp: Optional[Path] = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
@@ -334,6 +335,14 @@ def _append_entry(entry: LedgerEntry) -> bool:
         except OSError:
             logger.debug("spawn ledger write failed", exc_info=True)
             return False
+        finally:
+            # Cancellation raises BaseException, not OSError. If it lands after
+            # write_text but before os.replace, remove our pid-scoped temp file.
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    logger.debug("spawn ledger temp cleanup failed", exc_info=True)
 
 
 def register_child(

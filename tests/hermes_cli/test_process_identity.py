@@ -181,6 +181,44 @@ def test_corrupt_ledger_quarantined_not_rewritten_blind(tmp_path):
     assert [e["pid"] for e in entries] == [999]
 
 
+def test_append_entry_removes_temp_file_when_atomic_replace_is_cancelled(tmp_path):
+    """A task cancellation between write and replace must not leak tmp files."""
+
+    class _Cancelled(BaseException):
+        pass
+
+    ledger = tmp_path / "spawn-ledger.json"
+    entry = pi.LedgerEntry(**_entry(999, 50.0))
+    def _cancel_after_write(src, _dst):
+        assert Path(src).exists()
+        raise _Cancelled
+
+    with patch.object(pi, "_ledger_path", return_value=ledger), \
+         patch.object(pi.os, "replace", side_effect=_cancel_after_write):
+        with pytest.raises(_Cancelled):
+            pi._append_entry(entry)
+
+    assert list(tmp_path.glob("spawn-ledger.json.tmp*")) == []
+
+
+def test_append_entry_oserror_returns_false_and_removes_temp_file(tmp_path):
+    ledger = tmp_path / "spawn-ledger.json"
+    entry = pi.LedgerEntry(**_entry(999, 50.0))
+    with patch.object(pi, "_ledger_path", return_value=ledger), \
+         patch.object(pi.os, "replace", side_effect=OSError("replace failed")):
+        assert pi._append_entry(entry) is False
+    assert list(tmp_path.glob("spawn-ledger.json.tmp*")) == []
+
+
+def test_append_entry_cleanup_oserror_does_not_break_best_effort_contract(tmp_path):
+    ledger = tmp_path / "spawn-ledger.json"
+    entry = pi.LedgerEntry(**_entry(999, 50.0))
+    with patch.object(pi, "_ledger_path", return_value=ledger), \
+         patch.object(pi.os, "replace", side_effect=OSError("replace failed")), \
+         patch.object(Path, "unlink", side_effect=OSError("cleanup failed")):
+        assert pi._append_entry(entry) is False
+
+
 def test_ledger_entries_filters_dead_reused_and_foreign(tmp_path):
     ledger = tmp_path / "spawn-ledger.json"
     entries = [
