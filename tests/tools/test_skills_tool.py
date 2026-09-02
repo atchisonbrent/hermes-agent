@@ -410,6 +410,82 @@ class TestSkillView:
         assert result["name"] == "knowledge-brain"
 
 
+    @staticmethod
+    def _symlink_or_skip(link: Path, target: Path) -> None:
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+    def test_view_reads_leaf_linked_reference_in_managed_wrapper(self, tmp_path):
+        """Per-file symlinked skills (registry/vendor wrappers) expose references."""
+        canonical = tmp_path / "registry" / "skills" / "linked-skill"
+        (canonical / "references").mkdir(parents=True)
+        (canonical / "SKILL.md").write_text(
+            "---\nname: linked-skill\ndescription: Linked test skill.\n---\n# Linked\n",
+            encoding="utf-8",
+        )
+        (canonical / "references" / "guide.md").write_text("# Guide\ncanonical text\n", encoding="utf-8")
+        (tmp_path / "registry" / "outside.md").write_text("must not be readable\n", encoding="utf-8")
+
+        skills_root = tmp_path / "skills"
+        wrapper = skills_root / "research" / "linked-skill"
+        (wrapper / "references").mkdir(parents=True)
+        self._symlink_or_skip(wrapper / "SKILL.md", canonical / "SKILL.md")
+        self._symlink_or_skip(wrapper / "references" / "guide.md", canonical / "references" / "guide.md")
+        # A leaf link that escapes the canonical tree must still be refused.
+        self._symlink_or_skip(wrapper / "references" / "escape.md", tmp_path / "registry" / "outside.md")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            ok = json.loads(skill_view("linked-skill", file_path="references/guide.md"))
+            bad = json.loads(skill_view("linked-skill", file_path="references/escape.md"))
+
+        assert ok["success"] is True
+        assert "canonical text" in ok["content"]
+        assert bad["success"] is False
+        assert "escapes allowed directory" in bad["error"]
+
+    def test_view_rejects_reference_reached_through_symlinked_directory(self, tmp_path):
+        canonical = tmp_path / "registry" / "skills" / "dir-linked"
+        (canonical / "references").mkdir(parents=True)
+        (canonical / "SKILL.md").write_text(
+            "---\nname: dir-linked\ndescription: Dir linked test skill.\n---\n# Dir\n",
+            encoding="utf-8",
+        )
+        (canonical / "references" / "guide.md").write_text("# Guide\n", encoding="utf-8")
+        skills_root = tmp_path / "skills"
+        wrapper = skills_root / "research" / "dir-linked"
+        wrapper.mkdir(parents=True)
+        self._symlink_or_skip(wrapper / "SKILL.md", canonical / "SKILL.md")
+        self._symlink_or_skip(wrapper / "references", canonical / "references")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            result = json.loads(skill_view("dir-linked", file_path="references/guide.md"))
+
+        assert result["success"] is False
+        assert "escapes allowed directory" in result["error"]
+
+    def test_view_rejects_leaf_link_when_skill_md_is_a_real_file(self, tmp_path):
+        """Ordinary (non-linked) skills keep strict containment: canonical_root == root fails closed."""
+        elsewhere = tmp_path / "elsewhere" / "guide.md"
+        elsewhere.parent.mkdir(parents=True)
+        elsewhere.write_text("# Not part of this skill\n", encoding="utf-8")
+        skills_root = tmp_path / "skills"
+        skill = skills_root / "research" / "plain-skill"
+        (skill / "references").mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: plain-skill\ndescription: Plain test skill.\n---\n# Plain\n",
+            encoding="utf-8",
+        )
+        self._symlink_or_skip(skill / "references" / "guide.md", elsewhere)
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            result = json.loads(skill_view("plain-skill", file_path="references/guide.md"))
+
+        assert result["success"] is False
+        assert "escapes allowed directory" in result["error"]
+
+
 class TestSkillViewSecureSetupOnLoad:
     def test_requests_missing_required_env_and_continues(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)

@@ -955,7 +955,10 @@ def _serve_plugin_skill(
         )
 
     if file_path:
-        from tools.path_security import has_traversal_component, validate_within_dir
+        from tools.path_security import (
+            has_traversal_component,
+            validate_within_dir_or_linked_root,
+        )
 
         skill_root = skill_md.parent
         if has_traversal_component(file_path):
@@ -964,7 +967,9 @@ def _serve_plugin_skill(
                 ensure_ascii=False,
             )
         target = skill_root / file_path
-        path_error = validate_within_dir(target, skill_root)
+        path_error = validate_within_dir_or_linked_root(
+            target, skill_root, skill_md.resolve().parent
+        )
         if path_error:
             return json.dumps(
                 {"success": False, "error": path_error}, ensure_ascii=False
@@ -1516,7 +1521,10 @@ def skill_view(
 
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
-            from tools.path_security import validate_within_dir, has_traversal_component
+            from tools.path_security import (
+                has_traversal_component,
+                validate_within_dir_or_linked_root,
+            )
 
             # Security: Prevent path traversal attacks
             if has_traversal_component(file_path):
@@ -1531,8 +1539,12 @@ def skill_view(
 
             target_file = skill_dir / file_path
 
-            # Security: Verify resolved path is still within skill directory
-            traversal_error = validate_within_dir(target_file, skill_dir)
+            # Security: Verify resolved path is still within skill directory,
+            # or is a leaf symlink into the same canonical tree SKILL.md
+            # resolves to (managed per-file skill links).
+            traversal_error = validate_within_dir_or_linked_root(
+                target_file, skill_dir, skill_md.resolve().parent
+            )
             if traversal_error:
                 return json.dumps(
                     {
