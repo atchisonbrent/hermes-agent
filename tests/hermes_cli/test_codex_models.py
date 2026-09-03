@@ -35,14 +35,6 @@ def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch)
     assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
 
 
-def test_curated_codex_fallback_includes_astra_and_900k_variant():
-    model_ids = get_codex_model_ids()
-
-    assert "gpt-6-astra" in model_ids
-    assert "gpt-6-astra-900k" in model_ids
-    assert model_ids.index("gpt-6-astra-900k") == model_ids.index("gpt-6-astra") + 1
-
-
 def test_picker_synthesizes_900k_variants_for_verified_slugs():
     """Every live-verified large-context slug gets an explicit ``-900k``
     picker variant directly after its base entry; slugs that genuinely
@@ -50,7 +42,7 @@ def test_picker_synthesizes_900k_variants_for_verified_slugs():
     in the list as the cheaper 272K default."""
     model_ids = get_codex_model_ids()  # offline curated path
 
-    for base in ("gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"):
+    for base in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"):
         assert base in model_ids
         assert f"{base}-900k" in model_ids
         assert model_ids.index(f"{base}-900k") == model_ids.index(base) + 1

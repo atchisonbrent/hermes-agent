@@ -513,7 +513,6 @@ class TestCodexOAuthContextLength:
     @pytest.mark.parametrize(
         "slug",
         [
-            "gpt-6-astra",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
@@ -548,7 +547,6 @@ class TestCodexOAuthContextLength:
     @pytest.mark.parametrize(
         "slug",
         [
-            "gpt-6-astra",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
@@ -627,7 +625,7 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
-    @pytest.mark.parametrize("slug", ["gpt-6-astra-900k", "gpt-5.6-sol-900k", "gpt-daybreak-blue-latest-900k"])
+    @pytest.mark.parametrize("slug", ["gpt-5.6-sol-900k", "gpt-daybreak-blue-latest-900k"])
     def test_fallback_table_resolution_also_bumped(self, slug):
         """When the live probe fails, the 272K fallback-table value for an
         opted-in ``-900k`` variant is bumped the same way (same enforcement

@@ -2604,10 +2604,6 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
 # Used as a fallback when the live probe fails (no token, network error).
 # Longest keys first so substring match picks the most specific entry.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
-    # Launch-day Codex catalogs may omit Astra even after the response route
-    # is enabled. Keep the base route conservative; the explicit -900k variant
-    # below opts into Astra's documented 1M long-context capability.
-    "gpt-6-astra": 272_000,
     "gpt-5.1-codex-max": 272_000,
     "gpt-5.1-codex-mini": 272_000,
     "gpt-5.3-codex": 272_000,
@@ -2664,10 +2660,6 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
     "gpt-5.6": 900_000,   # sol / terra / luna — all three verified live at 900K
 }
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
-    # OpenAI documents Astra evaluations through 1M context; the Codex OAuth
-    # route completed a 300,029-token input probe on 2026-09-03. Preserve the
-    # established 900K safety margin used by Hermes for 1M-class Codex routes.
-    "gpt-6-astra": 900_000,
     "gpt-5.4": 900_000,   # verified live at 900K; gpt-5.4-mini rejected 500K — excluded
     "gpt-daybreak-blue-latest": 900_000,  # exact Daybreak/Sol alias verified at 911,276
 }
@@ -2686,7 +2678,6 @@ CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"
 # were never probed. Dated snapshots of the routable 5.6 bases are allowed
 # via _CODEX_900K_SNAPSHOT_RE.
 _CODEX_900K_ELIGIBLE_BASES = frozenset({
-    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
