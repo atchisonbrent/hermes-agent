@@ -13,6 +13,9 @@ import os
 logger = logging.getLogger(__name__)
 
 DEFAULT_CODEX_MODELS: List[str] = [
+    # GPT-6 Astra launched 2026-09-03. The Codex OAuth backend accepts this
+    # slug even while the per-account /models catalog is still rolling out.
+    "gpt-6-astra",
     # GPT-5.6 series (Sol/Terra/Luna). The public API exposes "-pro"
     # variants, but the ChatGPT Codex OAuth backend rejects them with HTTP 400,
     # so the curated offline fallback must not surface those dead choices.

@@ -511,11 +511,24 @@ class TestValidateCodex900kVariants:
     catalog; ineligible aliases are hard-rejected BEFORE the hidden-slug
     soft-accept (#92797 review)."""
 
-    _CATALOG = ["gpt-5.6-sol", "gpt-5.6-sol-900k", "gpt-5.5", "gpt-5.4-mini"]
+    _CATALOG = [
+        "gpt-6-astra",
+        "gpt-6-astra-900k",
+        "gpt-5.6-sol",
+        "gpt-5.6-sol-900k",
+        "gpt-5.5",
+        "gpt-5.4-mini",
+    ]
 
     def test_catalog_listed_variant_accepted(self):
         with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
             result = validate_requested_model("gpt-5.6-sol-900k", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    def test_astra_900k_variant_accepted(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model("gpt-6-astra-900k", "openai-codex")
         assert result["accepted"] is True
         assert result["recognized"] is True
 
