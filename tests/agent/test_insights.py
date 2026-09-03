@@ -263,6 +263,98 @@ class TestInsightsPopulated:
 
 
 
+    def test_public_model_usage_breakdown_reports_reconciled_contract(self, db):
+        """Dashboard handoff is complete, attributable, and internally consistent."""
+        db.create_session(session_id="covered", source="webui", model="model-a")
+        db.create_session(session_id="idle", source="webui", model="model-a")
+        db.create_session(session_id="excluded", source="cli", model="model-b")
+        db.update_token_counts(
+            "covered", input_tokens=10, output_tokens=2, model="model-a",
+            billing_provider="custom", estimated_cost_usd=1.25,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+        engine = InsightsEngine(db)
+        original_get_usage = engine._get_model_usage
+        query_count = 0
+
+        def counted_get_usage(cutoff, source=None):
+            nonlocal query_count
+            query_count += 1
+            return original_get_usage(cutoff, source)
+
+        engine._get_model_usage = counted_get_usage
+        result = engine.get_model_usage_breakdown(cutoff=0.0, source="webui")
+
+        assert query_count == 1
+        assert result["source_filter"] == "webui"
+        assert result["cutoff"] == 0.0
+        assert result["session_ids"] == ["covered", "idle"]
+        assert result["ledger_session_ids"] == ["covered"]
+        assert result["models"][0]["model"] == "model-a"
+        assert result["models"][0]["session_ids"] == ["covered", "idle"]
+        assert result["models"][0]["sessions"] == 2
+        assert result["models"][0]["cost"] == pytest.approx(1.25)
+        assert result["totals"]["input_tokens"] == 10
+        assert result["totals"]["output_tokens"] == 2
+        assert result["totals"]["cost"] == pytest.approx(1.25)
+        assert len(result["daily"]) == 1
+        assert result["daily"][0]["session_ids"] == ["covered", "idle"]
+        assert result["daily"][0]["input_tokens"] == 10
+        assert result["daily"][0]["cost"] == pytest.approx(1.25)
+        assert sum(row["cost"] for row in result["daily"]) == pytest.approx(
+            result["totals"]["cost"]
+        )
+
+    def test_public_model_usage_breakdown_tolerates_incompatible_ledger(self, db):
+        """Old/partial schemas retain aggregate sessions without false ledger proof."""
+        db.create_session(session_id="legacy", source="webui", model="model-a")
+        db.update_token_counts(
+            "legacy", input_tokens=10, model="model-a",
+            billing_provider="custom", estimated_cost_usd=1.25,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+        db._conn.execute("DROP TABLE session_model_usage")
+        db._conn.execute("CREATE TABLE session_model_usage (session_id TEXT)")
+        db._conn.commit()
+
+        result = InsightsEngine(db).get_model_usage_breakdown(cutoff=0.0)
+
+        assert result["session_ids"] == ["legacy"]
+        assert result["ledger_session_ids"] == []
+        assert result["models"][0]["model"] == "model-a"
+        assert result["models"][0]["session_ids"] == ["legacy"]
+        assert result["models"][0]["cost"] == pytest.approx(1.25)
+        assert result["totals"]["cost"] == pytest.approx(1.25)
+        assert result["daily"][0]["session_ids"] == ["legacy"]
+        assert result["daily"][0]["cost"] == pytest.approx(1.25)
+
+    def test_public_model_usage_breakdown_includes_sessions_spanning_cutoff(self, db):
+        """An active session is in-window even when it started before cutoff."""
+        db.create_session(session_id="spanning", source="cli", model="model-a")
+        db.create_session(session_id="excluded", source="webui", model="model-b")
+        for session_id in ("spanning", "excluded"):
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (10.0, 30.0, session_id),
+            )
+        db._conn.commit()
+
+        result = InsightsEngine(db).get_model_usage_breakdown(
+            cutoff=20.0, source="cli"
+        )
+
+        assert result["session_ids"] == ["spanning"]
+        assert result["models"][0]["session_ids"] == ["spanning"]
+
+    def test_public_model_usage_breakdown_empty_window_has_zero_contract(self, db):
+        result = InsightsEngine(db).get_model_usage_breakdown(cutoff=time.time() + 60)
+
+        assert result["session_ids"] == []
+        assert result["ledger_session_ids"] == []
+        assert result["models"] == []
+        assert result["daily"] == []
+        assert all(value == 0 for value in result["totals"].values())
+
     def test_model_breakdown_splits_mid_session_switch(self, db):
         """A session that switches models mid-flight is split across both
         models in the breakdown, not dumped on the initial model (#51607).

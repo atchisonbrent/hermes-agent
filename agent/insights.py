@@ -208,6 +208,149 @@ class InsightsEngine:
             "top_sessions": top_sessions,
         }
 
+    def get_model_usage_breakdown(
+        self, cutoff: float, source: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Return one-snapshot, fully reconciled usage for dashboard consumers.
+
+        ``session_ids`` is the exact source population. Each model and daily row
+        carries the session IDs it accounts for, allowing callers to reject a
+        partial or malformed response before replacing compatibility data.
+        ``ledger_session_ids`` means only that the per-model ledger contributed
+        to those sessions; aggregate residuals may also contribute.
+
+        The method drains queued counters when called with a writer SessionDB.
+        Read-only SessionDBs make that operation a no-op. An empty window returns
+        empty row lists and zero totals.
+        """
+        flush = getattr(self.db, "flush_token_counts", None)
+        if callable(flush):
+            flush()
+
+        started_snapshot = not self._conn.in_transaction
+        if started_snapshot:
+            self._conn.execute("BEGIN")
+        try:
+            sessions = self._get_usage_sessions(cutoff, source)
+            usage_rows = self._get_model_usage(cutoff, source)
+            models = self._compute_model_breakdown(
+                sessions,
+                cutoff,
+                source,
+                usage_rows=usage_rows,
+                include_session_ids=True,
+            )
+            model_by_name = {row["model"]: row for row in models}
+            modeled_session_ids = {
+                session_id
+                for row in models
+                for session_id in row.get("session_ids", [])
+            }
+            for session in sessions:
+                session_id = str(session["id"])
+                if session_id in modeled_session_ids:
+                    continue
+                model = session.get("model") or "unknown"
+                display_model = model.split("/")[-1] if "/" in model else model
+                row = model_by_name.get(display_model)
+                if row is None:
+                    row = {
+                        "model": display_model,
+                        "sessions": 0,
+                        "session_ids": [],
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": 0,
+                        "total_tokens": 0,
+                        "api_calls": 0,
+                        "tool_calls": 0,
+                        "cost": 0.0,
+                        "actual_cost": 0.0,
+                        "has_pricing": has_known_pricing(
+                            model,
+                            session.get("billing_provider") or None,
+                            session.get("billing_base_url"),
+                        ),
+                        "cost_status": session.get("cost_status") or "unknown",
+                    }
+                    models.append(row)
+                    model_by_name[display_model] = row
+                row["session_ids"].append(session_id)
+                row["session_ids"].sort()
+                row["sessions"] = len(row["session_ids"])
+
+            sessions_by_day: Dict[str, List[Dict]] = defaultdict(list)
+            for session in sessions:
+                day = time.strftime(
+                    "%Y-%m-%d", time.localtime(float(session["started_at"]))
+                )
+                sessions_by_day[day].append(session)
+
+            usage_by_session: Dict[str, List[Dict]] = defaultdict(list)
+            for row in usage_rows:
+                session_id = row.get("session_id")
+                if session_id is not None:
+                    usage_by_session[str(session_id)].append(row)
+
+            daily = []
+            total_keys = (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "reasoning_tokens",
+                "total_tokens",
+                "cost",
+                "actual_cost",
+            )
+            for day, day_sessions in sorted(sessions_by_day.items()):
+                day_ids = {str(session["id"]) for session in day_sessions}
+                day_usage = [
+                    row
+                    for session_id in day_ids
+                    for row in usage_by_session.get(session_id, [])
+                ]
+                day_models = self._compute_model_breakdown(
+                    day_sessions,
+                    cutoff,
+                    source,
+                    usage_rows=day_usage,
+                )
+                day_row = {
+                    "date": day,
+                    "session_ids": sorted(day_ids),
+                    "sessions": len(day_ids),
+                }
+                for key in total_keys:
+                    day_row[key] = sum(row.get(key) or 0 for row in day_models)
+                daily.append(day_row)
+
+            totals = {
+                key: sum(row.get(key) or 0 for row in models)
+                for key in total_keys
+            }
+            return {
+                "cutoff": cutoff,
+                "source_filter": source,
+                "generated_at": time.time(),
+                "session_ids": sorted(str(s["id"]) for s in sessions),
+                "ledger_session_ids": sorted(
+                    {
+                        str(row["session_id"])
+                        for row in usage_rows
+                        if row.get("session_id") is not None
+                    }
+                ),
+                "totals": totals,
+                "daily": daily,
+                "models": models,
+            }
+        finally:
+            if started_snapshot:
+                self._conn.rollback()
+
     def get_usage_breakdown(self, days: int = 30, source: str = None) -> Dict[str, Any]:
         """Return the analytics-usage payload without running a full generate().
 
@@ -244,6 +387,16 @@ class InsightsEngine:
     _GET_SESSIONS_ALL = (
         f"SELECT {_SESSION_COLS} FROM sessions"
         " WHERE started_at >= ?"
+        " ORDER BY started_at DESC"
+    )
+    _GET_USAGE_SESSIONS_WITH_SOURCE = (
+        f"SELECT {_SESSION_COLS} FROM sessions"
+        " WHERE (started_at >= ? OR ended_at >= ?) AND source = ?"
+        " ORDER BY started_at DESC"
+    )
+    _GET_USAGE_SESSIONS_ALL = (
+        f"SELECT {_SESSION_COLS} FROM sessions"
+        " WHERE started_at >= ? OR ended_at >= ?"
         " ORDER BY started_at DESC"
     )
 
@@ -294,12 +447,28 @@ class InsightsEngine:
         " OR instr(m.tool_calls, 'skill_manage') > 0)"
     )
 
-    def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
+    def _get_sessions(
+        self, cutoff: float, source: Optional[str] = None
+    ) -> List[Dict]:
         """Fetch sessions within the time window."""
         if source:
             cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
         else:
             cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _get_usage_sessions(
+        self, cutoff: float, source: Optional[str] = None
+    ) -> List[Dict]:
+        """Fetch sessions active at any point in the requested usage window."""
+        if source:
+            cursor = self._conn.execute(
+                self._GET_USAGE_SESSIONS_WITH_SOURCE, (cutoff, cutoff, source)
+            )
+        else:
+            cursor = self._conn.execute(
+                self._GET_USAGE_SESSIONS_ALL, (cutoff, cutoff)
+            )
         return [dict(row) for row in cursor.fetchall()]
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
@@ -597,7 +766,9 @@ class InsightsEngine:
         " WHERE s.started_at >= ?"
     )
 
-    def _get_model_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+    def _get_model_usage(
+        self, cutoff: float, source: Optional[str] = None
+    ) -> List[Dict]:
         """Fetch per-model usage rows within the window (issue #51607).
 
         Returns an empty list when the table is missing (e.g. a DB opened by
@@ -616,7 +787,13 @@ class InsightsEngine:
             return []
 
     def _compute_model_breakdown(
-        self, sessions: List[Dict], cutoff: float, source: str = None
+        self,
+        sessions: List[Dict],
+        cutoff: float,
+        source: Optional[str] = None,
+        *,
+        usage_rows: Optional[List[Dict]] = None,
+        include_session_ids: bool = False,
     ) -> List[Dict]:
         """Break down token usage and cost by model.
 
@@ -669,7 +846,8 @@ class InsightsEngine:
                 d.setdefault("has_pricing", False)
             return display_model
 
-        usage_rows = self._get_model_usage(cutoff, source)
+        if usage_rows is None:
+            usage_rows = self._get_model_usage(cutoff, source)
         usage_totals = defaultdict(lambda: {
             "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
             "cache_write_tokens": 0, "reasoning_tokens": 0,
@@ -752,7 +930,10 @@ class InsightsEngine:
         result = []
         for model, data in model_data.items():
             entry = {"model": model, **data}
-            entry["sessions"] = len(data["sessions"])
+            model_session_ids = sorted(str(value) for value in data["sessions"])
+            entry["sessions"] = len(model_session_ids)
+            if include_session_ids:
+                entry["session_ids"] = model_session_ids
             # Models that surfaced only via tool-call attribution (no token
             # rows) won't have these set by _accumulate — default them so the
             # output shape is uniform for downstream/JSON consumers.
