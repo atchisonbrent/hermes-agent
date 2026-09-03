@@ -84,6 +84,36 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
 
 
 
+def test_anthropic_fable_5_1_cached_usage_estimates_at_published_rates():
+    """Fable 5.1 must price native Anthropic usage, including its discounted
+    cache reads, instead of leaving otherwise complete session usage unknown.
+    """
+    usage = CanonicalUsage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_read_tokens=1_000_000,
+        cache_write_tokens=1_000_000,
+    )
+
+    result = estimate_usage_cost(
+        "claude-fable-5-1",
+        usage,
+        provider="anthropic",
+    )
+
+    entry = get_pricing_entry("claude-fable-5-1", provider="anthropic")
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("10.00")
+    assert entry.output_cost_per_million == Decimal("50.00")
+    assert entry.cache_read_cost_per_million == Decimal("0.25")
+    assert entry.cache_write_cost_per_million == Decimal("12.50")
+
+    assert result.status == "estimated"
+    assert result.source == "official_docs_snapshot"
+    assert result.pricing_version == "anthropic-pricing-2026-09"
+    assert result.amount_usd == Decimal("72.75")
+
+
 def test_deepseek_v4_pro_pricing_entry_exists():
     """Regression test: deepseek-v4-pro must have a pricing entry.
 
