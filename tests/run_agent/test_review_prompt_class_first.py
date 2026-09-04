@@ -1,14 +1,13 @@
 """Behavior tests for the skill review / combined review prompts.
 
-The review prompts steer the background review agent toward actively updating
-the skill library after most sessions, with a strong bias toward:
+The review prompts require validated reusable learning, with a preference for:
   1. Patching currently-loaded skills first,
   2. Patching existing umbrellas next,
   3. Adding references/ files under an existing umbrella,
   4. Creating a new class-level umbrella only when nothing else fits.
 
-User-preference corrections (style, format, verbosity, legibility) are
-first-class skill signals, not just memory signals.
+Stable user preferences have one memory owner; reusable procedures belong in skills.
+A no-write review is successful when no durable improvement is needed.
 
 These tests assert behavioral *instructions* are present — they do NOT
 snapshot the full prompt text (change-detector).
@@ -21,48 +20,19 @@ from run_agent import AIAgent
 # _SKILL_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
 
-def test_skill_review_prompt_biases_toward_active_updates():
-    """Prompt must frame updating as the default stance, not something rare."""
+def test_skill_review_prompt_requires_useful_owned_learning():
     prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "ACTIVE" in prompt or "active" in prompt.lower(), (
-        "must tell the reviewer to be active"
-    )
-    # "missed learning opportunity" or equivalent framing for not acting
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower(), (
-        "must frame inaction as a miss, not a neutral outcome"
-    )
+    assert "no-write" in prompt
+    assert "existing owner" in prompt
+    assert "recurring trigger" in prompt
+    assert "missed learning opportunity" not in prompt
 
 
-def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
-    """Style/format/verbosity complaints must be FIRST-CLASS skill signals, not just memory."""
+def test_skill_review_prompt_places_preferences_once():
     prompt = AIAgent._SKILL_REVIEW_PROMPT
-    lower = prompt.lower()
-    # Must mention style/format/verbosity-family corrections
-    assert any(k in lower for k in ("style", "format", "verbos", "legib", "tone")), (
-        "must name style/format/verbosity/legibility as signals"
-    )
-    # Must frame these as first-class skill signals (not memory-only)
-    assert "FIRST-CLASS" in prompt or "first-class" in prompt, (
-        "must explicitly label user-preference corrections as first-class skill signals"
-    )
-    # Must mention the correction-type phrases to tune the model's ear
-    assert "stop doing" in lower or "don't" in lower or "hate" in lower or "frustrat" in lower, (
-        "must give concrete phrasing examples so the model recognizes corrections"
-    )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    assert "user memory" in prompt
+    assert "Do not duplicate preferences" in prompt
+    assert "stop doing X" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -74,18 +44,6 @@ def test_combined_review_prompt_has_memory_section():
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
     assert "**Memory**" in prompt
     assert "memory tool" in prompt
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------

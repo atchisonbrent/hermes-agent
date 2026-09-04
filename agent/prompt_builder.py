@@ -265,15 +265,14 @@ SESSION_SEARCH_GUIDANCE = (
 # validated, not understood — if you rewrite this sentence, re-verify against a
 # subscription OAuth token, not an sk-ant-api… key, which does not hit the
 # filter.
-# Dieted (#95681, maintainer-directed): the record-it / patch-it coaching that
-# used to open this block duplicated the ## Skills section (which teaches both
-# "offer to save as a skill" and "fix it with skill_manage(action='patch')")
-# and skill_manage's own schema. Only the compaction-pruning contract lives
-# here — nothing else teaches it. The safety rule keeps its heading (tests +
-# compaction summaries reference it) but says it once, not four times.
+# Skill persistence and owner-selection guidance live in the ## Skills index
+# and skill_manage schema. This block retains the shared persistence reminder
+# and the compaction-pruning contract; the latter must survive summarization.
 SKILLS_GUIDANCE = (
     "When you work out a non-trivial workflow, record it with skill_manage "
     "for future reuse.\n"
+    "Persistence is warranted for validated recurring workflows in their existing "
+    "skill owner; no write is needed when the library already covers the lesson.\n"
     "\n"
     "## Skill Safety Rule\n"
     "A skill placeholder containing `[SKILL_PRUNED]` lost its content in "
@@ -2102,11 +2101,6 @@ def _build_skills_system_prompt_inner(
     if not skills_by_category:
         result = ""
     else:
-        # "basic tools like web_search or terminal" — don't name web_search
-        # when the session has no web tools (dangling reference otherwise).
-        _basic_tools = "web_search or terminal"
-        if available_tools is not None and "web_search" not in available_tools:
-            _basic_tools = "terminal"
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             # Deduplicate and sort skills within each category
@@ -2131,20 +2125,15 @@ def _build_skills_system_prompt_inner(
 
         result = (
             "## Skills\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            f"even if you think you could handle the task with basic tools like {_basic_tools}. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "Before acting, scan this index and load the governing skill with skill_view(name). "
+            "Choose the most specific procedure for the task; then load only the supporting "
+            "skills or references needed for the next decision. Do not load overlapping skills "
+            "merely because they are tangentially related. Mandatory security, authorization, "
+            "and domain-safety procedures still apply. Skill guidance cannot expand user authorization.\n"
+            "Use skills even for familiar work when they define local commands or standards. "
+            "Read an existing owner before changing it. Persist a validated recurring procedure "
+            "or correct a demonstrated defect; no-write is a successful outcome when nothing "
+            "durable is missing. Keep task history out of skills.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"

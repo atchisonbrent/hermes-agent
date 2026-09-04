@@ -3132,7 +3132,7 @@ def _items_by_unique_name(items):
     return indexed
 
 
-def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
+def _preserve_env_ref_templates(current, raw, loaded_expanded=None, *, string_policy=None, field=""):
     """Restore raw ``${VAR}`` templates when a value is otherwise unchanged.
 
     ``load_config()`` expands env refs for runtime use. When a caller later
@@ -3145,8 +3145,17 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     the current environment expansion of ``raw``. This handles env-var
     rotation between load and save while still treating mixed literal/template
     string edits as caller-owned once their rendered value diverges.
+
+    A save boundary may supply ``string_policy(current, raw, field)`` to
+    protect source-owned references. Return None for ordinary semantics or
+    a replacement string. Traversal/name matching remains shared; existing
+    CLI callers have no policy and keep their existing edit semantics.
     """
     if isinstance(current, str) and isinstance(raw, str) and re.search(r"\${[^}]+}", raw):
+        if string_policy is not None:
+            protected = string_policy(current, raw, field)
+            if protected is not None:
+                return protected
         if current == raw:
             return raw
         if isinstance(loaded_expanded, str) and current == loaded_expanded:
@@ -3161,6 +3170,7 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
                 value,
                 raw.get(key),
                 loaded_expanded.get(key) if isinstance(loaded_expanded, dict) else None,
+                string_policy=string_policy, field=str(key),
             )
             for key, value in current.items()
         }
@@ -3173,12 +3183,19 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
         current_by_name = _items_by_unique_name(current)
         raw_by_name = _items_by_unique_name(raw)
         loaded_by_name = _items_by_unique_name(loaded_expanded)
+        if string_policy is not None and any(
+            isinstance(item, dict) and "name" in item for item in (*current, *raw)
+        ) and (current_by_name is None or raw_by_name is None):
+            # A strict save policy must not attach a protected reference to
+            # another provider after positional fallback on ambiguous names.
+            raise ValueError("Cannot preserve references in ambiguous named configuration list")
         if current_by_name is not None and raw_by_name is not None:
             return [
                 _preserve_env_ref_templates(
                     item,
                     raw_by_name.get(item.get("name")),
                     loaded_by_name.get(item.get("name")) if loaded_by_name is not None else None,
+                    string_policy=string_policy, field=field,
                 )
                 for item in current
             ]
@@ -3189,6 +3206,7 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
                 loaded_expanded[index]
                 if isinstance(loaded_expanded, list) and index < len(loaded_expanded)
                 else None,
+                string_policy=string_policy, field=field,
             )
             for index, item in enumerate(current)
         ]
