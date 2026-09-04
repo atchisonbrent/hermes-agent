@@ -1511,16 +1511,24 @@ class ProcessRegistry:
                     _append_chunk(tail)
             except Exception:
                 pass
-            # Always reap the child to prevent zombie processes.
+            # EOF only says the output pipe closed. Redirected/closed stdout
+            # can precede process exit by hours; a timed wait here used to emit
+            # a false completion with exit_code=None. This daemon reader can
+            # wait for the actual child exit (including normal kill/cancel).
             try:
-                session.process.wait(timeout=5)
+                session.process.wait()
             except Exception as e:
-                logger.debug("Process wait timed out or failed: %s", e)
-            session.exited = True
-            if session.completion_reason != "killed":
-                session.exit_code = session.process.returncode
-                session.completion_reason = "exited"
-            self._move_to_finished(session)
+                logger.debug("Process wait failed: %s", e)
+                try:
+                    session.process.poll()
+                except Exception:
+                    logger.debug("Process exit status remains unknown", exc_info=True)
+            if session.process.returncode is not None:
+                session.exited = True
+                if session.completion_reason != "killed":
+                    session.exit_code = session.process.returncode
+                    session.completion_reason = "exited"
+                self._move_to_finished(session)
 
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
