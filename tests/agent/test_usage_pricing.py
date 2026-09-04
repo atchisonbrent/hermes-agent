@@ -84,6 +84,47 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
 
 
 
+def test_openai_astra_standard_and_long_context_cache_usage_uses_published_rates():
+    entry = get_pricing_entry("gpt-6-astra", provider="openai-api")
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("10.00")
+    assert entry.output_cost_per_million == Decimal("50.00")
+    assert entry.cache_read_cost_per_million == Decimal("1.00")
+    assert entry.cache_write_cost_per_million == Decimal("12.50")
+    assert entry.tier_threshold_tokens == 272_000
+    assert entry.input_cost_per_million_above == Decimal("20.00")
+    assert entry.output_cost_per_million_above == Decimal("75.00")
+    assert entry.cache_read_cost_per_million_above == Decimal("2.00")
+    assert entry.cache_write_cost_per_million_above == Decimal("25.00")
+
+    standard = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(
+            input_tokens=50_000,
+            output_tokens=50_000,
+            cache_read_tokens=50_000,
+            cache_write_tokens=50_000,
+        ),
+        provider="openai-api",
+    )
+    long_context = estimate_usage_cost(
+        "gpt-6-astra",
+        CanonicalUsage(
+            input_tokens=100_000,
+            output_tokens=100_000,
+            cache_read_tokens=100_000,
+            cache_write_tokens=100_000,
+        ),
+        provider="openai-api",
+    )
+
+    assert standard.status == "estimated"
+    assert standard.amount_usd == Decimal("3.675")
+    assert long_context.status == "estimated"
+    assert long_context.amount_usd == Decimal("12.2")
+    assert long_context.pricing_version == "openai-gpt-6-astra-2026-09"
+
+
 def test_anthropic_fable_5_1_cached_usage_estimates_at_published_rates():
     """Fable 5.1 must price native Anthropic usage, including its discounted
     cache reads, instead of leaving otherwise complete session usage unknown.

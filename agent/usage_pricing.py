@@ -137,6 +137,7 @@ class PricingEntry:
     input_cost_per_million_above: Optional[Decimal] = None
     output_cost_per_million_above: Optional[Decimal] = None
     cache_read_cost_per_million_above: Optional[Decimal] = None
+    cache_write_cost_per_million_above: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -203,6 +204,29 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
         pricing_version="openai-gpt-5.6-2026-07",
+    ),
+    # GPT-6 Astra standard API pricing. OpenAI's model page says: prompts with
+    # more than 272K input tokens use 2x input/cache rates and 1.5x output for
+    # the full request. GPT-5.6+ cache reads are 0.1x input and writes are 1.25x.
+    # Sources:
+    # https://platform.openai.com/docs/models/gpt-6-astra
+    # https://platform.openai.com/docs/guides/prompt-caching
+    (
+        "openai",
+        "gpt-6-astra",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        tier_threshold_tokens=272_000,
+        input_cost_per_million_above=Decimal("20.00"),
+        output_cost_per_million_above=Decimal("75.00"),
+        cache_read_cost_per_million_above=Decimal("2.00"),
+        cache_write_cost_per_million_above=Decimal("25.00"),
+        source="official_docs_snapshot",
+        source_url="https://platform.openai.com/docs/models/gpt-6-astra",
+        pricing_version="openai-gpt-6-astra-2026-09",
     ),
     # ── Anthropic Claude Fable 5.1 ────────────────────────────────────────
     # Same $10/$50 base and 5-minute cache-write pricing as Fable 5, with
@@ -1866,6 +1890,7 @@ def estimate_usage_cost(
     input_rate = entry.input_cost_per_million
     output_rate = entry.output_cost_per_million
     cache_read_rate = entry.cache_read_cost_per_million
+    cache_write_rate = entry.cache_write_cost_per_million
     if (
         entry.tier_threshold_tokens is not None
         and usage.prompt_tokens > entry.tier_threshold_tokens
@@ -1876,6 +1901,8 @@ def estimate_usage_cost(
             output_rate = entry.output_cost_per_million_above
         if entry.cache_read_cost_per_million_above is not None:
             cache_read_rate = entry.cache_read_cost_per_million_above
+        if entry.cache_write_cost_per_million_above is not None:
+            cache_write_rate = entry.cache_write_cost_per_million_above
 
     if usage.input_tokens and input_rate is None:
         return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
@@ -1891,7 +1918,7 @@ def estimate_usage_cost(
                 notes=("cache-read pricing unavailable for route",),
             )
     if usage.cache_write_tokens:
-        if entry.cache_write_cost_per_million is None:
+        if cache_write_rate is None:
             return CostResult(
                 amount_usd=None,
                 status="unknown",
@@ -1906,8 +1933,8 @@ def estimate_usage_cost(
         amount += Decimal(usage.output_tokens) * output_rate / _ONE_MILLION
     if cache_read_rate is not None:
         amount += Decimal(usage.cache_read_tokens) * cache_read_rate / _ONE_MILLION
-    if entry.cache_write_cost_per_million is not None:
-        amount += Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
+    if cache_write_rate is not None:
+        amount += Decimal(usage.cache_write_tokens) * cache_write_rate / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
 
