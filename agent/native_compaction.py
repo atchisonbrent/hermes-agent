@@ -1,4 +1,4 @@
-"""Native OpenAI Responses server-side compaction — gpt-5.6 on direct OpenAI routes only.
+"""Native Responses compaction — gpt-5.6 and Astra on direct OpenAI routes only.
 
 OpenAI's Responses API supports server-side compaction: include
 ``context_management=[{"type": "compaction", "compact_threshold": N}]`` in a
@@ -9,9 +9,10 @@ as an input item on later requests stands in for the pruned history, so the
 model keeps long-horizon recall without the client ever seeing a summary.
 Docs: https://developers.openai.com/api/docs/guides/compaction
 
-Hermes' support is deliberately narrow (live verification, Aug 2026):
+Hermes' support is deliberately narrow (live verification, Aug–Sep 2026):
 
-* **gpt-5.6 family only.** gpt-5.6 and its variants compact correctly.
+* **gpt-5.6 family and gpt-6-astra.** gpt-5.6 and its variants compact correctly.
+  Astra emission and compaction-only replay verified on Codex OAuth, Sep 2026.
   Sending the field to gpt-5.1 / gpt-5.2 reliably fails server-side —
   HTTP 500 on the blocking path and a permanent stall on the streaming
   path (90s watchdog x 3 retries = a dead turn). There is no structured
@@ -64,8 +65,10 @@ _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
 
 
 def is_native_compaction_model(model: Optional[str]) -> bool:
-    """True when the model is in the gpt-5.6 family."""
-    return _ELIGIBLE_MODEL_MARKER in (model or "").lower()
+    """True for the verified gpt-5.6 family or exact Astra model."""
+    # Astra variants and vendor-prefixed IDs remain unverified and excluded.
+    normalized = (model or "").lower()
+    return _ELIGIBLE_MODEL_MARKER in normalized or normalized == "gpt-6-astra"
 
 
 def resolve_native_compaction_capabilities(
@@ -212,8 +215,15 @@ def native_compaction_context_management(
         return None
 
     compressor = getattr(agent, "context_compressor", None)
+    configured_threshold = getattr(agent, "codex_responses_compact_threshold", None)
+    model_thresholds = getattr(agent, "codex_responses_model_thresholds", None)
+    if isinstance(model_thresholds, dict):
+        # Exact model IDs only: switching models must not leak an override.
+        configured_threshold = model_thresholds.get(
+            getattr(agent, "model", ""), configured_threshold
+        )
     threshold = resolve_compact_threshold(
-        getattr(agent, "codex_responses_compact_threshold", None),
+        configured_threshold,
         getattr(compressor, "threshold_tokens", None) if compressor is not None else None,
     )
     return [{"type": "compaction", "compact_threshold": threshold}]

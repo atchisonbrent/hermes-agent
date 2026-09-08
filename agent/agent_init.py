@@ -2914,6 +2914,10 @@ def init_agent(
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
     agent.codex_responses_native_compaction = codex_responses_native_compaction
     agent.codex_responses_compact_threshold = codex_responses_compact_threshold
+    _native_model_thresholds = _compression_cfg.get("codex_responses_model_thresholds")
+    agent.codex_responses_model_thresholds = (
+        dict(_native_model_thresholds) if isinstance(_native_model_thresholds, dict) else {}
+    )
     from agent.native_compaction import resolve_native_compaction_capabilities
     agent.runtime_capabilities = resolve_native_compaction_capabilities(
         model=agent.model,

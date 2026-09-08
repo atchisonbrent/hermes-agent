@@ -29051,6 +29051,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "codex_app_server_auto"),
         ("compression", "codex_responses_native"),
         ("compression", "codex_responses_compact_threshold"),
+        ("compression", "codex_responses_model_thresholds"),
         ("compression", "in_place"),
         ("compression", "checkpoint_required"),
         ("compression", "micro_compact"),

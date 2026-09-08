@@ -109,6 +109,8 @@ compression:
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
   codex_responses_native: false  # gpt-5.6 on direct OpenAI/Codex: server-side compaction (opt-in)
   codex_responses_compact_threshold: null  # Automatic server compaction trigger
+  # codex_responses_model_thresholds:     # Optional exact model ID overrides (tokens)
+  #   gpt-6-astra: 204000                # 75% of a 272K context window
   in_place: true             # Compact on the same session id, no rotation (default: true)
 
 # Summarization model/provider configured under auxiliary:
@@ -134,8 +136,9 @@ auxiliary:
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
-| `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages only for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription (see below) |
+| `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages only for gpt-5.6-family models and exact `gpt-6-astra` on the direct OpenAI API or a ChatGPT Codex subscription (see below) |
 | `codex_responses_compact_threshold` | `null` | `null` or positive integer | `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
+| `codex_responses_model_thresholds` | `{}` | map | Exact, case-sensitive model IDs override the global native token threshold. Values follow the same validation and safety clamp; invalid values use automatic behavior. Unmatched models keep the global setting. Overrides are absolute tokens, not percentages, and take effect on model switches and config reload. |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
 
 ### In-place compaction (single stable session id)
@@ -264,7 +267,7 @@ client-side summary pass, and ZDR-friendly (`store: false`, no
 Opt in with `compression.codex_responses_native: true`. The gate is deliberately
 narrow, re-checked on every request:
 
-- **Models:** the gpt-5.6 family only. Other models fail server-side when the
+- **Models:** the gpt-5.6 family and exact `gpt-6-astra`. Unverified variants remain excluded. Some other models fail server-side when the
   field is present (gpt-5.1/5.2 return HTTP 500 or stall the stream — there is
   no structured rejection to downgrade on, verified live Aug 2026).
 - **Routes:** `api.openai.com` (OpenAI API key) or the ChatGPT Codex backend

@@ -1,4 +1,4 @@
-"""Tests for native OpenAI Responses server-side compaction (gpt-5.6 only).
+"""Tests for native Responses compaction (gpt-5.6 and exact Astra).
 
 Live behavior verified 2026-08-08 against api.openai.com: gpt-5.6 and
 gpt-5.3-codex accept ``context_management`` and emit compaction items;
@@ -46,6 +46,16 @@ class TestModelGate:
         assert is_native_compaction_model("gpt-5.6-mini")
         assert is_native_compaction_model("GPT-5.6-2026-07-15")
 
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "GPT-6-ASTRA"])
+    def test_exact_astra_eligible(self, model):
+        assert is_native_compaction_model(model)
+
+    @pytest.mark.parametrize(
+        "model", ["gpt-6", "gpt-6-other", "gpt-6-astra-mini", "gpt-6-astra-900k"]
+    )
+    def test_unverified_gpt6_variants_ineligible(self, model):
+        assert not is_native_compaction_model(model)
+
     def test_other_models_ineligible(self):
         # gpt-5.1/5.2 fail server-side on context_management (live-verified);
         # gpt-5.3-codex works upstream but is outside the supported set.
@@ -77,6 +87,40 @@ class TestRouteGate:
 
 
 class TestRequestGate:
+    def test_astra_codex_resolved_capability_reaches_request(self):
+        from agent.native_compaction import resolve_native_compaction_capabilities
+
+        agent = _agent(
+            model="gpt-6-astra",
+            base_url="https://chatgpt.com/backend-api/codex",
+            threshold=400_000,
+            compressor=SimpleNamespace(threshold_tokens=204_000),
+        )
+        agent.runtime_capabilities = resolve_native_compaction_capabilities(
+            model=agent.model,
+            base_url=agent.base_url,
+            provider="openai-codex",
+            is_codex_backend=True,
+        )
+        assert native_compaction_context_management(
+            agent, is_codex_backend=True
+        ) == [{"type": "compaction", "compact_threshold": 195_808}]
+
+    def test_astra_native_override_preserves_other_models(self):
+        agent = _agent(
+            model="gpt-6-astra", threshold=400_000,
+            compressor=SimpleNamespace(threshold_tokens=217_600),
+        )
+        agent.codex_responses_model_thresholds = {"gpt-6-astra": 204_000}
+        assert native_compaction_context_management(
+            agent, is_codex_backend=False
+        ) == [{"type": "compaction", "compact_threshold": 204_000}]
+        agent.model = "gpt-5.6-sol"
+        agent.context_compressor.threshold_tokens = 450_000
+        assert native_compaction_context_management(
+            agent, is_codex_backend=False
+        ) == [{"type": "compaction", "compact_threshold": 400_000}]
+
     def test_eligible_route_gets_payload(self):
         payload = native_compaction_context_management(
             _agent(), is_codex_backend=False
