@@ -7034,6 +7034,10 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         )
         native_threshold = 200_000
     agent.codex_responses_compact_threshold = native_threshold
+    model_thresholds = compression.get("codex_responses_model_thresholds")
+    agent.codex_responses_model_thresholds = (
+        dict(model_thresholds) if isinstance(model_thresholds, dict) else {}
+    )
 
     # Absence restores the agent_init/config default (0 = disabled).
     idle_raw = compression.get("idle_compact_after_seconds", 0)

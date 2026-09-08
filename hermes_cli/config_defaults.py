@@ -1036,6 +1036,7 @@ DEFAULT_CONFIG = {
                                       # the ChatGPT Codex backend; every other
                                       # route/model is unaffected. Hermes' local
                                       # compression stays armed as the fallback.
+        "codex_responses_model_thresholds": {},  # Exact model ID -> absolute native token trigger
         "codex_responses_compact_threshold": None,  # Optional absolute server compaction
                                       # trigger in input tokens. None follows the
                                       # resolved local compression trigger with a
