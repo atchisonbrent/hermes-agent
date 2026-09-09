@@ -613,19 +613,18 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # (W&B marks up most Pro-tier models). Keyed on the full vendor-prefixed
     # model id because the wandb billing route preserves it.
     # Re-apply after `hermes update` (source patch, not a config change).
-    # GLM-5.3-Flash: rates established from W&B's billing contract with this
-    # workspace (2026-09-05, custom_contract, no public page publishes them).
-    # Not yet on the public token pricing page — verify against it when it
-    # appears and promote to official_docs_snapshot if the rates match.
+    # GLM-5.3-Flash: public model card verified 2026-09-09. This supersedes
+    # the provisional workspace rates; the card gives no historical effective date.
     (
         "wandb",
         "zai-org/glm-5.3-flash",
     ): PricingEntry(
-        input_cost_per_million=Decimal("0.76"),
-        output_cost_per_million=Decimal("2.42"),
-        cache_read_cost_per_million=Decimal("0.14"),
-        source="custom_contract",
-        pricing_version="wandb-contract-2026-09",
+        input_cost_per_million=Decimal("0.15"),
+        output_cost_per_million=Decimal("0.50"),
+        cache_read_cost_per_million=Decimal("0.05"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/inference/coreweave/cw_zai-org_GLM-5.3-Flash",
+        pricing_version="wandb-glm-5.3-flash-2026-09-09",
     ),
     (
         "wandb",
