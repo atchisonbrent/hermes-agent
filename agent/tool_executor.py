@@ -1953,6 +1953,10 @@ def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -
         ))
 
 
+from tools.write_approval import capture_review_evidence
+
+
+@capture_review_evidence
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools.
 

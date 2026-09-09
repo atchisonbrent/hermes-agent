@@ -469,7 +469,10 @@ _MEMORY_REVIEW_PROMPT = (
     "preferences, or personal details worth remembering?\n"
     "2. Has the user expressed expectations about how you should behave, their work "
     "style, or ways they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. "
+    "Read both current memory stores first; save only stable, supported facts "
+    "needed across future sessions, without duplicating existing policy. Keep "
+    "procedures in their skill owner and task results in history/artifacts. "
+    "If something qualifies, propose it using the memory tool. "
     "If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
 
@@ -479,7 +482,7 @@ _SKILL_REVIEW_PROMPT = (
     "and the future decision a change improves before writing. Create a skill "
     "only for a recurring trigger, or correct a demonstrated defect.\n\n"
     "Target shape of the library: CLASS-LEVEL skills, each with a rich "
-    "SKILL.md and a `references/` directory for session-specific detail. "
+    "SKILL.md and a `references/` directory for reusable supporting detail. "
     "Not a long flat list of narrow one-session-one-skill entries. This "
     "does not require an update when the existing owner is sufficient.\n\n"
     "Signals to assess under the recurrence/ownership gate above:\n"
@@ -513,12 +516,13 @@ _SKILL_REVIEW_PROMPT = (
     "  3. ADD A SUPPORT FILE under an existing umbrella. Skills can be "
     "packaged with three kinds of support files — use the right "
     "directory per kind:\n"
-    "     • `references/<topic>.md` — session-specific detail (error "
-    "transcripts, reproduction recipes, provider quirks) AND "
+    "     • `references/<topic>.md` — validated reusable reproduction "
+    "recipes, provider quirks, and "
     "condensed knowledge banks: quoted research, API docs, external "
     "authoritative excerpts, or domain notes you found while working "
     "on the problem. Write it concise and for the value of the task, "
-    "not as a full mirror of upstream docs.\n"
+    "not as a full mirror of upstream docs. One-off error transcripts, task "
+    "outcomes, commit IDs and incident receipts belong in history/artifacts.\n"
     "     • `templates/<name>.<ext>` — starter files meant to be "
     "copied and modified (boilerplate configs, scaffolding, a "
     "known-good example the agent can `reproduce with modifications`).\n"
@@ -612,7 +616,7 @@ _COMBINED_REVIEW_PROMPT = (
     "demonstrated defects. Identify the existing owner and the future decision "
     "the change improves. A no-write pass is a successful outcome.\n\n"
     "Target shape of the skill library: CLASS-LEVEL skills with a rich "
-    "SKILL.md and a `references/` directory for session-specific detail. "
+    "SKILL.md and a `references/` directory for reusable supporting detail. "
     "Not a long flat list of narrow one-session-one-skill entries.\n\n"
     "Signals to assess under the recurrence/ownership gate above:\n"
     "  • User corrected style, format or workflow. Stable preferences belong "
@@ -634,9 +638,10 @@ _COMBINED_REVIEW_PROMPT = (
     "find the right one). Patch it.\n"
     "  3. ADD A SUPPORT FILE under an existing umbrella via "
     "skill_manage action=write_file. Three kinds: "
-    "`references/<topic>.md` for session-specific detail OR condensed "
-    "knowledge banks (quoted research, API docs excerpts, domain "
-    "notes) written concise and task-focused; `templates/<name>.<ext>` "
+    "`references/<topic>.md` for validated reusable reproduction recipes or "
+    "condensed knowledge banks (quoted research, API docs excerpts, domain "
+    "notes). One-off error transcripts, task outcomes, commit IDs and incident "
+    "receipts belong in history/artifacts; `templates/<name>.<ext>` "
     "for starter files meant to be copied and modified; "
     "`scripts/<name>.<ext>` for statically re-runnable actions "
     "(verification, fixture generators, probes). Add a one-line "
@@ -1487,6 +1492,11 @@ def _run_review_in_thread(
             review_agent, _rt, _routed = build_cache_parity_fork(
                 agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS
             )
+            # Acceptance review needs original evidence, never this author's
+            # synthetic review instruction or its own generated digest.
+            review_agent._durable_review_source = messages_snapshot
+            from tools.write_approval import machine_authored_turn
+            review_agent._durable_review_source_is_machine = machine_authored_turn(agent)
 
             # Register this fork on the PARENT's _active_children (the same
             # list interrupt() fans out to for subagent delegation) and

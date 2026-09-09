@@ -2104,6 +2104,13 @@ DEFAULT_CONFIG = {
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt
+    # Proposal-triggered OAuth review; human write_approval stays independent.
+    "durable_write_review": {
+        "enabled": False,
+        "provider": "openai-codex",
+        "model": "gpt-6-astra",
+        "max_input_bytes": 65536,
+    },
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,

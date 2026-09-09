@@ -35,6 +35,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_write_text, is_truthy_value
 from tools.registry import no_cache_check_fn
+from tools.write_approval import serialized_write
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -411,6 +412,7 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    @serialized_write
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -470,6 +472,7 @@ class MemoryStore:
 
         return self._success_response(target, "Entry added.")
 
+    @serialized_write
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         old_text = old_text.strip()
@@ -541,6 +544,7 @@ class MemoryStore:
 
         return self._success_response(target, "Entry replaced.")
 
+    @serialized_write
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
         old_text = old_text.strip()
@@ -583,6 +587,7 @@ class MemoryStore:
 
         return self._success_response(target, "Entry removed.")
 
+    @serialized_write
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply a sequence of add/replace/remove ops to one target atomically.
 
@@ -1273,8 +1278,10 @@ MEMORY_SCHEMA = {
         "single lone change.\n\n"
         "WHEN: save proactively when the user states a preference, correction, or personal "
         "detail, or you learn a stable fact about their environment, conventions, or workflow. "
-        "Priority: user preferences & corrections > environment facts > procedures. The best "
-        "memory stops the user repeating themselves.\n\n"
+        "Priority: user preferences & corrections > stable environment facts. "
+        "Keep procedures in their skill owner, detailed architecture in project docs, "
+        "and one-off results and task state in history/artifacts. Skip unsupported "
+        "generalizations and policy already in instructions.\n\n"
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
         "removes or shortens enough stale entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
@@ -1388,7 +1395,5 @@ registry.register(
     emoji="🧠",
     dynamic_schema_overrides=_build_memory_schema_overrides,
 )
-
-
 
 

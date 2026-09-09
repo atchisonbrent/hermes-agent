@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_write_text, is_truthy_value
+from tools.write_approval import serialized_write
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
@@ -1741,6 +1742,8 @@ def _skill_manage_batch(
                 return tool_error(decision.message, success=False)
             if not decision.allow:
                 payload = {"action": "batch", "operations": operations}
+                if default_name:
+                    payload["name"] = default_name
                 acts = ", ".join(op["action"] for op in operations)
                 skills = ", ".join(sorted(set(names)))
                 gist = f"batch({len(operations)} ops: {acts}) on {skills}"
@@ -1930,6 +1933,7 @@ def _maybe_debounced_sync_push(skill_name: str) -> None:
         _sync_push_timer.start()
 
 
+@serialized_write
 def skill_manage(
     action: str,
     name: str,
