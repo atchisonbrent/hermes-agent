@@ -105,6 +105,7 @@ def _resolve_one(subsystem: str, rest: List[str]):
     return rest[0], None
 
 
+@wa.serialized_write
 def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     target, err = _resolve_one(subsystem, rest)
     if err or target is None:
@@ -139,6 +140,8 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
 
 def _apply_one(subsystem: str, rec, memory_store):
+    if rec.get("review", {}).get("state") in {"applying", "applied"}:
+        return False, "Automatic application may already have occurred; inspect the target and discard this record."
     payload = rec.get("payload", {})
     try:
         if subsystem == wa.MEMORY:

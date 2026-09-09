@@ -3434,6 +3434,10 @@ def switch_model(
             )
 
 
+from tools.write_approval import capture_review_evidence
+
+
+@capture_review_evidence
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
