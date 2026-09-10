@@ -148,14 +148,15 @@ def machine_authored_turn(agent):
 def review_evidence(messages, *, machine_authored=False):
     """Capture bounded whole messages, never a generated source summary.
 
-    Preserve the complete human turn. Include newest attributable tool results
-    that fit, declaring omissions rather than discarding useful small evidence.
+    Preserve the complete human turn and a bounded suffix of earlier human
+    messages. Include newest attributable current-turn tool results that fit.
     Machine-authored goals are not user testimony. Missing proof still defers.
     """
-    from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
     source = []
     try:
-        start = max(i for i, m in enumerate(messages) if m.get("role") == "user")
+        from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+        from agent.conversation_compression import _is_real_user_message
+        start = max(i for i, m in enumerate(messages) if _is_real_user_message(m))
         tool_calls = []
         for m in messages[start:]:
             if m.get("role") == "assistant":
@@ -164,7 +165,7 @@ def review_evidence(messages, *, machine_authored=False):
                 tool_calls = m.get("tool_calls") or []
             if m.get("role") not in {"user", "tool"}:
                 continue
-            if m["role"] == "user" and machine_authored:
+            if m["role"] == "user" and (machine_authored or not _is_real_user_message(m)):
                 continue
             provenance = {}
             if m["role"] == "tool":
@@ -187,6 +188,19 @@ def review_evidence(messages, *, machine_authored=False):
         if len(_encoded(required).encode()) > 16000:
             raise ValueError("Oversize user source")
         selected = list(required)
+        # A follow-up may authorize a preference stated in an earlier turn.
+        # Keep a contiguous suffix of whole human messages, newest first;
+        # never skip a newer correction to make room for an older statement.
+        omitted_users = 0
+        if not machine_authored:
+            earlier = [m for m in messages[:start] if _is_real_user_message(m)]
+            for index, message in enumerate(reversed(earlier)):
+                content = message.get("content")
+                item = {"id": f"source:{-index - 1}", "role": "user", "text": content}
+                if not isinstance(content, str) or len(_encoded(selected + [item]).encode()) > 15000:
+                    omitted_users = len(earlier) - index
+                    break
+                selected.append(item)
         omitted = 0
         for item in reversed([s for s in source if s["role"] == "tool"]):
             if len(_encoded(selected + [item]).encode()) <= 16000:
@@ -196,7 +210,9 @@ def review_evidence(messages, *, machine_authored=False):
         source = sorted(selected, key=lambda s: int(s["id"].split(":")[1]))
         if source and omitted:
             source[0]["omitted_tool_results"] = omitted
-    except (ValueError, TypeError, AttributeError, KeyError):
+        if source and omitted_users:
+            source[0]["omitted_user_messages"] = omitted_users
+    except (ValueError, TypeError, AttributeError, KeyError, ImportError, RuntimeError):
         source = []
     token = _evidence.set(source)
     try:
@@ -694,7 +710,10 @@ specific and actionable, not vague. Do not move a proposal to another owner.
 Check full current USER/MEMORY, owner files, and original source. If the independent
 source does not demonstrate the claim, recurrence, or defect, defer or reject.
 Source is a bounded window of whole messages. The context-level omitted_source_results count means
-other results were excluded for size, not that they support the proposal. Never
+other results were excluded for size, not that they support the proposal.
+Source-level omitted_user_messages counts excluded earlier human messages. Earlier
+human messages are verbatim antecedents, not authorization to ignore later
+corrections. Synthetic recovery and compression messages are excluded. Never
 infer success, completeness, or lack of contradictory evidence from omissions.
 If omitted evidence is needed to judge the claim, defer. A tool request or output
 that merely repeats the author's assertion is not independent validation.

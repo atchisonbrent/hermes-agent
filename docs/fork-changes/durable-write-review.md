@@ -39,9 +39,15 @@ configured byte limit, including instructions (default 64 KiB; range 1–128 KiB
 
 - Exact proposed operations, complete current USER/MEMORY, and complete affected
   local skill packages, including supporting files.
-- The complete current human message and recent attributable whole tool results
-  that fit a bounded source window. Omissions are declared. No transcript replay,
-  generated source summary, persistence-tool echo, or delegated-agent result.
+- The complete current human message, a bounded contiguous suffix of earlier
+  human messages, and recent attributable current-turn whole tool results.
+  Earlier messages are verbatim antecedents, not assistant claims or generated
+  summaries. Selection stops before an oversized earlier human message so a
+  newer correction cannot be skipped in favor of an older preference. Omissions
+  are declared. Runtime synthetic user-role messages are excluded using the
+  existing human-message classifier. No full transcript replay, persistence-tool
+  echo, or delegated-agent result. Messages already removed by compaction are
+  not reconstructed; missing evidence still defers.
 - Cron and delegated goals are not human testimony. Background candidate authors
   preserve the original source provenance rather than supplying their own prompt.
 

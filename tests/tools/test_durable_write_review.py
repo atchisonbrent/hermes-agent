@@ -64,6 +64,29 @@ def answer(decision="accept", evidence=None):
             "evidence": ["source:0"] if evidence is None else evidence}, {}
 
 
+def test_combined_omissions_survive_apply_time_recheck(review, monkeypatch):
+    from tools.memory_tool import MemoryStore, memory_tool
+    wa, jobs, home = review
+    messages = [
+        {"role": "user", "content": "Older statement."},
+        {"role": "user", "content": "Correction: " + "x" * 16000},
+        {"role": "user", "content": "Remember that I prefer concise replies."},
+        {"role": "assistant", "tool_calls": [{"id": "large", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "large", "content": "x" * 20000},
+    ]
+    def decide(context, config):
+        assert context["source"][0]["omitted_user_messages"] == 2
+        assert context["omitted_source_results"] == 1
+        return answer()
+    monkeypatch.setattr(wa, "_review_call", decide)
+    with wa.review_evidence(messages):
+        result = json.loads(memory_tool(action="add", target="user", content="Prefers concise replies.", store=MemoryStore()))
+    assert result["staged"]
+    jobs[0]()
+    assert "Prefers concise replies." in (home / "memories/USER.md").read_text()
+    assert wa.get_pending("memory", result["pending_id"]) is None
+
+
 def test_thread_start_failure_defers_with_reason(review, monkeypatch):
     wa, jobs, home = review
     def fail(callback):
@@ -411,9 +434,10 @@ def test_crash_after_side_effect_cannot_replay(review, monkeypatch):
     assert (home / "memories/USER.md").read_text().count("Prefers concise replies.") == 1
 
 
+@pytest.mark.parametrize("antecedent", [False, True])
 @pytest.mark.parametrize("mode", ["shared", "sequential_quiet", "sequential_verbose", "concurrent"])
 @pytest.mark.parametrize("tool", ["memory", "skill_manage"])
-def test_actual_dispatchers_capture_original_evidence(review, skill_owner, monkeypatch, mode, tool):
+def test_actual_dispatchers_capture_original_evidence(review, skill_owner, monkeypatch, mode, tool, antecedent):
     from types import SimpleNamespace as NS
     from unittest.mock import MagicMock, patch
     from run_agent import AIAgent
@@ -444,6 +468,12 @@ def test_actual_dispatchers_capture_original_evidence(review, skill_owner, monke
     call = NS(id="write1", type="function", function=NS(name=tool, arguments=json.dumps(args)))
     assistant = NS(tool_calls=[call])
     messages = [{"role": "user", "content": "Original current turn evidence."}]
+    expected = [{"id": "source:0", "role": "user", "text": messages[0]["content"]}]
+    if antecedent:
+        messages.insert(0, {"role": "assistant", "content": "Unsupported actor claim."})
+        messages.insert(0, {"role": "user", "content": "Earlier explicit preference."})
+        expected.insert(0, {"id": "source:-1", "role": "user", "text": messages[0]["content"]})
+    original_messages = list(messages)
     if mode == "shared":
         invoke_tool(agent, tool, args, "task", tool_call_id="write1", messages=messages)
     else:
@@ -453,10 +483,10 @@ def test_actual_dispatchers_capture_original_evidence(review, skill_owner, monke
     records = wa.list_pending(subsystem)
     assert len(records) == 1, messages
     context = records[0]["review"]["context"]
-    assert context["source"] == [{"id": "source:0", "role": "user", "text": "Original current turn evidence."}]
+    assert context["source"] == expected
     assert wa._evidence.get() is None
     assert len(jobs) == 1
-    assert messages[0] == {"role": "user", "content": "Original current turn evidence."}
+    assert messages[:len(original_messages)] == original_messages
 
 
 def test_background_candidate_prompt_is_not_original_evidence(review):
