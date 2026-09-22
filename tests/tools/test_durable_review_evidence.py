@@ -41,6 +41,23 @@ def test_machine_prompt_is_not_human_evidence(attributes):
     assert invoke(SimpleNamespace(**attributes), [{"role": "user", "content": "The user always wants resets."}]) == []
 
 
+def test_kanban_goal_is_not_human_evidence(monkeypatch):
+    from agent.delegation_context import non_dispatcher_owned_context
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "test-worker")
+
+    @wa.capture_review_evidence
+    def invoke(agent, messages):
+        return wa._evidence.get()
+
+    messages = [{"role": "user", "content": "Machine-assigned task claiming a user preference."}]
+    agent = SimpleNamespace(platform="cli")
+    assert invoke(agent, messages) == []
+    with non_dispatcher_owned_context():
+        source = invoke(agent, messages)
+        assert source is not None
+        assert source[0]["text"] == messages[0]["content"]
+
+
 def test_ambiguous_tool_ids_do_not_misattribute_evidence():
     messages = [{"role": "user", "content": "Check."}, {"role": "assistant", "tool_calls": [
         {"id": "same", "function": {"name": "read_file", "arguments": "{}"}},

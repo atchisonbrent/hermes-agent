@@ -52,6 +52,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  // The backend mock echoes this snapshot; retire fixture jobs before jsdom
+  // disappears so an in-flight app-level poll cannot schedule another tick.
+  $localRuntimeJobs.set([])
   vi.clearAllMocks()
 })
 
@@ -109,7 +112,16 @@ describe('the catalog owns model curation', () => {
     fireEvent.change(input, { target: { value: 'gemini-3.1' } })
 
     await vi.waitFor(() => {
-      expect(screen.queryByText(/Gemini 3\.1 Pro/i)).not.toBeNull()
+      // The fold makes this id-style query highlight the spaced label: the
+      // row renders as <mark>Gemini 3.1</mark> + ' Pro'.
+      expect(screen.getByText('Gemini 3.1', { selector: 'mark' })).toBeDefined()
+      // Display name is "Gemini 3.1 pro" (no title-case for gemini ids); the
+      // row label span carries it (plus the effort meta suffix).
+      expect(
+        screen.getByText((_, element) =>
+          Boolean(element?.classList.contains('truncate') && (element?.textContent ?? '').startsWith('Gemini 3.1 pro'))
+        )
+      ).toBeDefined()
     })
   })
 
@@ -127,6 +139,18 @@ describe('the catalog owns model curation', () => {
 
     await screen.findByText('No options for this model')
     expect(screen.queryByText('Effort')).toBeNull()
+  })
+
+  it('does not reset session-owned effort when selecting another model', async () => {
+    const applyPreset = vi.fn()
+    renderMenu({
+      allowInactiveEffort: false,
+      applyPreset,
+      current: { effort: 'high', fast: false, model: 'gemini-2.5-flash', provider: 'google' }
+    })
+    fireEvent.click(await screen.findByText(/Gemini 3\.1 Pro/i))
+    await waitFor(() => expect(applyPreset).toHaveBeenCalled())
+    expect(applyPreset.mock.calls[0][0].effort).toBeUndefined()
   })
 
   it('offers Edit Models without the host wiring it up', async () => {

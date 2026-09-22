@@ -1,0 +1,83 @@
+# September release reconciliation
+
+Classification: local-product-delta (maintenance of existing fork policies and
+upstream candidates, not a new upstream feature).
+Maintenance owner: fork maintainer.
+Upstream base: release `v2026.9.14`, commit
+`345cd2b057a452236de401d3534b8502a7465e8d`.
+Fork baseline: `809a481178807ab9742cd95ce89804640b7f7277`.
+Upstream status: not-filed; individual candidates retain their own records.
+
+## Retained behavior and current owners
+
+- W&B attribution: `agent/agent_init.py`, `agent/client_lifecycle.py`, and
+  `agent/auxiliary_client.py`. Main construction, route rebuilds, and synchronous
+  and asynchronous auxiliary clients retain the exact-host policy.
+- Pricing: existing W&B and Fable rows and W&B billing-route normalization remain
+  in `agent/usage_pricing.py`. Upstream already supplies equivalent Astra tiered
+  pricing; that duplicate implementation is retired.
+- Native compaction: exact-model thresholds remain in `agent/native_compaction.py`,
+  construction in `agent/agent_init.py`, gateway cache invalidation in
+  `gateway/run.py`, and live TUI adoption in `tui_gateway/session_compression.py`.
+  TUI functions are rebound into `tui_gateway.server`; callers use that bound
+  runtime entrypoint rather than calling unbound module functions.
+- Durable-write review: `tools/write_approval.py`, the existing tool dispatch
+  evidence hooks, and `hermes_cli/write_approval_commands.py`. Serialized memory
+  writers now live in `tools/memory_tool_store.py`; batch skill staging is in
+  `tools/skill_manager_batch.py`. Pending records use upstream's path and atomic
+  JSON writer. Original evidence and background ownership/read guards remain.
+- Skill loading/learning policy: `agent/prompt_builder.py` and
+  `agent/background_review.py`; no-write is valid, recurrence is required, and
+  preferences are not duplicated across storage owners. New upstream procedural
+  guidance is retained without restoring mandatory-write pressure.
+- Leaf-linked skill references: `tools/path_security.py` and the shared reader in
+  `tools/skills_tool_plugin.py`, used by ordinary and plugin-qualified views.
+- Public reconciled usage API: `agent/insights.py`; additive API, consistent
+  snapshot, spanning-session coverage, unchanged existing report contract. The
+  cutoff selects sessions, whose lifetime totals are reported; daily buckets
+  use session start dates, with `?` for corrupt timestamps. Windows are not
+  additive period-usage reports. An open session whose start precedes the cutoff
+  is excluded; a NULL end time is not proof of recent activity. This is retained
+  selection behavior, not an all-live-sessions report.
+- Reference-preserving config saves: `hermes_cli/config.py`; the downstream
+  string-policy seam and fail-closed ambiguous named-list handling remain.
+- Session database override: parser, chat and one-shot entrypoints, and `hermes_state.py`;
+  explicit override is separate from profile configuration isolation.
+- Process lifecycle: real exit evidence after output EOF in
+  `tools/process_registry.py`. Waiting retains a reader thread until actual exit;
+  elapsed time alone must not fabricate completion. Spawn-ledger cleanup is
+  supplied by upstream `utils.atomic_json_write`; the obsolete local cleanup
+  block is retired and tests inspect the actual upstream temp files.
+- Desktop: session-owned reasoning remains in the extracted
+  `use-model-menu-controller.ts`; model catalog and fast-mode presets retain
+  their existing responsibilities.
+- Fork CI: standard runners instead of unprovisioned billable runners; upstream
+  mutation workflow remains upstream-only. No test reduction is introduced.
+
+## Verification and limits
+
+The expanded Python run exercised 56 files: 1335 passed, 6 skipped, zero failures,
+using an isolated candidate environment on the production Python 3.11 version.
+The preceding 54-file run also passed on Python 3.13. Coverage includes fork regressions plus
+neighboring upstream config, approval, memory, background review, prompt, and
+TUI hot-reload tests and both neighboring upstream system-prompt files. Separate
+downstream WebUI startups used the candidate Python 3.11 and 3.13 environments,
+empty disposable state, and private loopback ports; three deep health checks
+passed on each, and the process groups exited. These are not full-suite,
+authenticated-conversation, exact-production-dependency, or deployment claims.
+Desktop regressions passed (62 tests across four files), and renderer typecheck
+passed. New timestamp, model-selection, worker-evidence, and prompt regressions
+failed before their fixes. The ledger cleanup test also failed with the actual
+unlink operation disabled. Release evidence holds exact commands and later
+verification results; do not infer coverage from counts alone.
+
+Rollback: before activation retain the known-good source pair, dependency
+requirements/environment, and supported state/config backups. Stop affected
+runtimes through their existing lifecycle owner before restoring code or
+dependencies. Do not replay uncertain pending writes or automatically restore
+state that may contain newer work. Reverting the merge alone is not a complete
+operational rollback.
+
+Reclassification trigger: upstream equivalents replace the residual delta only
+after its behavioral contract and downstream consumers are verified. This record
+adds no scheduler, automatic conflict fixer, deployment daemon, or recovery API.

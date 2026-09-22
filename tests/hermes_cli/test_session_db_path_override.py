@@ -52,3 +52,38 @@ def test_top_level_oneshot_parser_accepts_session_db_path(tmp_path):
     args = parser.parse_args(["--session-db", str(target), "-z", "review"])
 
     assert args.session_db == str(target)
+
+
+def test_oneshot_dispatch_pins_database_before_resume_lookup(tmp_path):
+    """Exercise dispatch and real SessionDB without calling a model."""
+    import os
+    import subprocess
+    import sys
+
+    home = tmp_path / "isolated"
+    target = tmp_path / "retained" / "state.db"
+    env = {"HOME": str(tmp_path), "HERMES_HOME": str(home),
+           "PATH": os.environ["PATH"], "TARGET_DB": str(target)}
+    program = '''
+import os
+from pathlib import Path
+from hermes_cli import main
+from hermes_cli._parser import build_top_level_parser
+from hermes_state import SessionDB
+parser, _, _ = build_top_level_parser()
+args = parser.parse_args(["--session-db", os.environ["TARGET_DB"], "-z", "test"])
+def resolve(args, use_tui):
+    assert os.environ.get("HERMES_SESSION_DB_PATH") == os.environ["TARGET_DB"]
+def run(*args, **kwargs):
+    db = SessionDB()
+    db.create_session("oneshot-override", source="cli", model="test")
+    db.close()
+main._resolve_chat_session_args = resolve
+main._run_and_exit_oneshot = run
+main._run_oneshot_from_args(args)
+assert Path(os.environ["TARGET_DB"]).is_file()
+assert not (Path(os.environ["HERMES_HOME"]) / "state.db").exists()
+'''
+    result = subprocess.run([sys.executable, "-c", program], env=env,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr

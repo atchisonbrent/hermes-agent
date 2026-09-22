@@ -334,7 +334,7 @@ class TestInsightsPopulated:
         db.create_session(session_id="excluded", source="webui", model="model-b")
         for session_id in ("spanning", "excluded"):
             db._conn.execute(
-                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                "UPDATE sessions SET started_at = ?, ended_at = ?, input_tokens = 10, output_tokens = 2 WHERE id = ?",
                 (10.0, 30.0, session_id),
             )
         db._conn.commit()
@@ -345,6 +345,37 @@ class TestInsightsPopulated:
 
         assert result["session_ids"] == ["spanning"]
         assert result["models"][0]["session_ids"] == ["spanning"]
+        assert result["totals"]["total_tokens"] == 12
+        assert result["daily"][0]["total_tokens"] == 12
+        assert result["daily"][0]["date"] == time.strftime("%Y-%m-%d", time.localtime(10.0))
+
+    def test_public_model_usage_breakdown_excludes_old_open_sessions(self, db):
+        """A NULL end time alone is not evidence of activity after the cutoff."""
+        db.create_session(session_id="old-open", source="cli", model="model-a")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = 10, ended_at = NULL, input_tokens = 10 WHERE id = 'old-open'"
+        )
+        db._conn.commit()
+        result = InsightsEngine(db).get_model_usage_breakdown(cutoff=20.0)
+        assert result["session_ids"] == []
+        assert result["models"] == []
+        assert result["daily"] == []
+        assert result["totals"]["total_tokens"] == 0
+
+    @pytest.mark.parametrize("started_at", ["not-an-epoch", 8.4e252])
+    def test_public_model_usage_breakdown_preserves_usage_with_unknown_start(self, db, started_at):
+        db.create_session(session_id="damaged-time", source="webui", model="model-a")
+        db.update_token_counts("damaged-time", input_tokens=10, output_tokens=2)
+        db.flush_token_counts()
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+            (started_at, time.time(), "damaged-time"),
+        )
+        db._conn.commit()
+        result = InsightsEngine(db).get_model_usage_breakdown(cutoff=0.0)
+        assert result["session_ids"] == ["damaged-time"]
+        assert result["daily"][0]["date"] == "?"
+        assert result["daily"][0]["input_tokens"] == result["totals"]["input_tokens"] == 10
 
     def test_public_model_usage_breakdown_empty_window_has_zero_contract(self, db):
         result = InsightsEngine(db).get_model_usage_breakdown(cutoff=time.time() + 60)
@@ -405,6 +436,23 @@ class TestInsightsPopulated:
         assert report["overview"]["estimated_cost"] == pytest.approx(3.75)
         assert report["overview"]["actual_cost"] == pytest.approx(3.0)
 
+
+    def test_tool_usage_sums_disjoint_sessions_without_double_counting_pairs(self, db):
+        """One session records a call as tool_name only, another as tool_calls only: both count.
+        A session carrying BOTH representations of the same call still counts it once (#9814)."""
+        db.create_session(session_id="gw", source="gateway", model="m")
+        db.append_message("gw", role="tool", content="r", tool_name="search_files")
+        db.create_session(session_id="cli", source="cli", model="m")
+        db.append_message("cli", role="assistant", content="x",
+                          tool_calls=[{"function": {"name": "search_files", "arguments": "{}"}}])
+        db.create_session(session_id="both", source="cli", model="m")
+        db.append_message("both", role="assistant", content="x",
+                          tool_calls=[{"function": {"name": "search_files", "arguments": "{}"}}])
+        db.append_message("both", role="tool", content="r", tool_name="search_files")
+        db._conn.commit()
+
+        tools = InsightsEngine(db).generate(days=30)["tools"]
+        assert next(t["count"] for t in tools if t["tool"] == "search_files") == 3
 
     def test_tool_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)

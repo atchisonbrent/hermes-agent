@@ -245,6 +245,25 @@ def skill_owner(review):
     return root
 
 
+def test_support_file_labels_normalize_windows_separators(review, skill_owner, monkeypatch):
+    """Exercise label comparison with Windows-style relative paths on any OS."""
+    from pathlib import PureWindowsPath
+
+    wa, jobs, home = review
+    original = Path.relative_to
+
+    def windows_relative(path, *args, **kwargs):
+        return PureWindowsPath(*original(path, *args, **kwargs).parts)
+
+    payload = {"name": "probe", "action": "remove_file", "file_path": "references/check.md"}
+    with wa.review_evidence([{"role": "user", "content": "Remove this obsolete checked reference."}]):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(Path, "relative_to", windows_relative)
+            context = wa._review_context("skills", payload, wa._evidence.get(), wa.review_config())
+    assert context["files"]["probe/references/check.md"]["text"] == "Check old behavior"
+    assert not jobs
+
+
 @pytest.mark.parametrize("stale", [False, True])
 def test_multifile_skill_batch_review(review, skill_owner, monkeypatch, stale):
     wa, jobs, home = review
@@ -508,13 +527,13 @@ def test_background_candidate_prompt_is_not_original_evidence(review):
 def test_background_skill_apply_preserves_read_and_ownership_guards(review, skill_owner, monkeypatch):
     import contextvars
     from tools.skill_provenance import set_current_write_origin
-    from tools import skill_manager_tool as sm, skill_usage
+    from tools import skill_manager_tool as sm, skill_manager_guards as guards, skill_usage
     wa, jobs, home = review
     skill_usage.mark_agent_created("probe")
     monkeypatch.setattr(wa, "_review_call", lambda *a: answer())
     def propose_background():
         set_current_write_origin("background_review")
-        sm._reset_background_review_read_marks()
+        guards._reset_background_review_read_marks()
         with wa.review_evidence([{"role": "user", "content": "Repeated verification demonstrates this defect."}]):
             return json.loads(sm.skill_manage(action="patch", name="probe", old_string="Step 1.", new_string="Step 2."))
     result = contextvars.Context().run(propose_background)
@@ -524,8 +543,8 @@ def test_background_skill_apply_preserves_read_and_ownership_guards(review, skil
     assert wa.get_pending("skills", result["pending_id"])["review"]["state"] == "defer"
     def propose_read_background():
         set_current_write_origin("background_review")
-        sm._reset_background_review_read_marks()
-        sm.mark_background_review_skill_read(skill_owner / "SKILL.md")
+        guards._reset_background_review_read_marks()
+        guards.mark_background_review_skill_read(skill_owner / "SKILL.md")
         with wa.review_evidence([{"role": "user", "content": "Repeated verification demonstrates this defect."}]):
             return json.loads(sm.skill_manage(action="patch", name="probe", old_string="Step 1.", new_string="Step 2."))
     result = contextvars.Context().run(propose_read_background)
@@ -568,6 +587,20 @@ def test_invalid_reviewer_configuration_cannot_fall_back(review, kind):
     result = staged_memory(wa)
     assert not result["success"]
     assert not jobs
+    assert f"durable_write_review.{key}" in result["error"]
+
+
+def test_symlinked_home_defers_with_explicit_reason(review, monkeypatch):
+    wa, jobs, home = review
+    link = home.parent / (home.name + "-link")
+    link.symlink_to(home, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(link))
+    result = staged_memory(wa)
+    record = wa.get_pending("memory", result["pending_id"])
+    assert record["review"]["state"] == "defer"
+    assert "symlink" in record["review"]["reason"].lower()
+    assert not jobs
+    assert not (home / "memories/USER.md").exists()
 
 
 def test_oauth_route_refuses_non_codex_endpoint_before_call(review, monkeypatch):
