@@ -104,7 +104,7 @@ compression:
   tail_mode: lean            # Tail retention policy: lean | legacy (default: lean)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
   min_tail_user_messages: 1  # Real user messages guaranteed in the tail (default: 1)
-  codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
+  codex_gpt55_autoraise: true  # eligible 5.x Codex OAuth bases: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
   codex_responses_native: false  # gpt-5.6 on direct OpenAI/Codex: server-side compaction (opt-in)
@@ -133,8 +133,8 @@ auxiliary:
 | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `idle_compact_after_seconds` | `0` | ≥0 seconds | Opt-in: compact up front when a session resumes after this many seconds idle (0 = disabled). Skips when context ≤ threshold × target_ratio; honors cooldown/anti-thrash/lock guards |
-| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
-| `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
+| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for eligible gpt-5.4/5.5/5.6 bases and the exact Daybreak slug on ChatGPT Codex OAuth (see below). Set `false` to keep the global `threshold` |
+| `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
 | `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages only for gpt-5.6-family models and exact `gpt-6-astra` on the direct OpenAI API or a ChatGPT Codex subscription (see below) |
 | `codex_responses_compact_threshold` | `null` | `null` or positive integer | `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
@@ -185,19 +185,20 @@ Plugin context engines can reuse the same resolution logic via
 override `update_model()` own their own compaction policy and may ignore the
 map.
 
-### Codex gpt-5.5 threshold autoraise
+### Codex gpt-5.4/5.5/5.6 threshold autoraise
 
-The ChatGPT Codex OAuth backend hard-caps gpt-5.5 at a **272K** context window
-(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
-GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
-half the window the model can actually use. When the active route is Codex
-OAuth (`provider: openai-codex`) and the model is gpt-5.5, Hermes raises the
-trigger to **85%** (~231K) and shows a notice with the opt-out command. The
+The ChatGPT Codex OAuth backend advertises **272K** for eligible gpt-5.4,
+gpt-5.5, and gpt-5.6 base slugs (also the exact
+`gpt-daybreak-blue-latest` alias). At the default 50% trigger, compaction
+would fire at ~136K. When the active route is Codex OAuth
+(`provider: openai-codex`) and an eligible *base* is selected, Hermes raises
+the trigger to **85%** (~231K) and shows an opt-out notice. Explicit `-900k`
+variants are excluded; GPT-6 and older Codex slugs are not eligible. The
 notice is shown once per profile — a marker under `$HERMES_HOME`
 (`.codex_gpt55_autoraise_notice`) records that it ran, so repeated agent/session
 inits (e.g. every inbound gateway message) don't re-emit it; if the raised
-threshold later changes it re-notifies once. Only this exact route is affected;
-gpt-5.5 on any other provider keeps your global `threshold`. To opt back down to
+threshold later changes it re-notifies once. Only this provider route is affected;
+the same models on other providers keep your global `threshold`. To opt back down to
 the global value:
 
 ```bash
@@ -212,24 +213,31 @@ hermes config set compression.codex_gpt55_autoraise_notice false
 
 ### Codex large-context `-900k` picker variants (opt-in)
 
-The ChatGPT Codex backend *advertises* a 272K window for the gpt-5.4 and
-gpt-5.6 (Sol/Terra/Luna) families, but actually accepts ~911K input tokens
-for ChatGPT-subscription accounts (live-verified Aug 2026). Hermes keeps the
+The ChatGPT Codex backend advertises 272K for the gpt-5.4, gpt-5.6
+(Sol/Terra/Luna), gpt-6-sol, and gpt-6-astra slugs on the tested account. The
+5.x large windows were verified in Aug 2026; gpt-6-sol and gpt-6-astra each
+completed a request with 894,677 server-reported input tokens on Sep 22 2026.
+Their `-900k` aliases conservatively resolve to **890K** while the catalog
+advertises 272K; the exact rejection ceiling has not been tested. Hermes keeps
 **advertised 272K as the default** for the base slugs — a bigger window means
 more tokens per request and much faster subscription-usage burn, so the large
 window is strictly opt-in.
 
 To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
-`gpt-5.6-sol-900k`, `gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`,
-`gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
-the model id is sent to the backend, and pricing/usage accounting treats them
-as the base model. Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
+`gpt-6-sol-900k`, `gpt-6-astra-900k`, `gpt-5.6-sol-900k`,
+`gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`, `gpt-5.4-900k`). These are
+Hermes-side aliases: the suffix is stripped before
+the model id is sent to the backend. Codex OAuth usage is subscription-included;
+the suffix does not create a separate billed SKU. Slugs that genuinely enforce
+272K (gpt-5.5, gpt-5.4-mini)
 have no `-900k` variant.
 
-Compaction thresholds follow the window: base slugs (272K) get the **85%
-autoraise** described above, while `-900k` variants keep your global
-`compression.threshold` (default 50%, ~450K) — the autoraise exists to stop
-wasting a small window, which a 900K window doesn't need.
+Compaction thresholds follow the window: eligible 5.x base slugs may get the
+**85% autoraise** described above when enabled; GPT-6 bases use the configured
+threshold with the small-window floor. The GPT-6 `-900k` variants use Hermes
+local compression (50% of 890K unless a lower absolute cap applies), not
+native Responses compaction. Other verified `-900k` variants keep your global
+`compression.threshold` (default 50%, ~450K).
 
 ### Codex app-server thread compaction
 
@@ -267,9 +275,11 @@ client-side summary pass, and ZDR-friendly (`store: false`, no
 Opt in with `compression.codex_responses_native: true`. The gate is deliberately
 narrow, re-checked on every request:
 
-- **Models:** the gpt-5.6 family and exact `gpt-6-astra`. Unverified variants remain excluded. Some other models fail server-side when the
-  field is present (gpt-5.1/5.2 return HTTP 500 or stall the stream — there is
-  no structured rejection to downgrade on, verified live Aug 2026).
+- **Models:** the gpt-5.6 family (including its `-900k` variants) and exact
+  `gpt-6-astra`. `gpt-6-astra-900k` and gpt-6-sol variants are excluded until
+  their native-compaction behavior is verified. Some other models fail
+  server-side when the field is present (gpt-5.1/5.2 return HTTP 500 or stall
+  the stream — there is no structured rejection to downgrade on, verified live Aug 2026).
 - **Routes:** `api.openai.com` (OpenAI API key) or the ChatGPT Codex backend
   (Codex subscription OAuth) only. xAI, GitHub/Copilot, OpenRouter, relays, and
   local servers never see the field.

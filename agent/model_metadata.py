@@ -2602,8 +2602,10 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
 # caps lower (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex).
 #
 # Used as a fallback when the live probe fails (no token, network error).
-# Longest keys first so substring match picks the most specific entry.
+# The resolver sorts keys by length before substring matching.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
+    "gpt-6-sol": 272_000,
+    "gpt-6-astra": 272_000,
     "gpt-5.1-codex-max": 272_000,
     "gpt-5.1-codex-mini": 272_000,
     "gpt-5.3-codex": 272_000,
@@ -2662,6 +2664,12 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
     "gpt-5.4": 900_000,   # verified live at 900K; gpt-5.4-mini rejected 500K — excluded
     "gpt-daybreak-blue-latest": 900_000,  # exact Daybreak/Sol alias verified at 911,276
+    # Both completed Codex Responses requests with 894,677 server-reported
+    # input tokens (2026-09-22); their account catalog still advertises 272K.
+    # The 890K cap leaves margin below the largest tested pass; no rejection
+    # ceiling was measured for these models.
+    "gpt-6-sol": 890_000,
+    "gpt-6-astra": 890_000,
 }
 
 # The advertised value the verified-above table is allowed to override.
@@ -2678,6 +2686,8 @@ CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"
 # were never probed. Dated snapshots of the routable 5.6 bases are allowed
 # via _CODEX_900K_SNAPSHOT_RE.
 _CODEX_900K_ELIGIBLE_BASES = frozenset({
+    "gpt-6-sol",
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",

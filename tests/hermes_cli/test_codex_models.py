@@ -47,6 +47,11 @@ def test_picker_synthesizes_900k_variants_for_verified_slugs():
         assert f"{base}-900k" in model_ids
         assert model_ids.index(f"{base}-900k") == model_ids.index(base) + 1
 
+    from hermes_cli.codex_models import _finalize_codex_models
+    for base in ("gpt-6-sol", "gpt-6-astra"):
+        live_catalog = _finalize_codex_models([base])
+        assert live_catalog == [base, f"{base}-900k"]
+
     assert "gpt-5.5-900k" not in model_ids
     assert "gpt-5.4-mini-900k" not in model_ids
     assert "gpt-5.3-codex-900k" not in model_ids
