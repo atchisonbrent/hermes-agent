@@ -612,7 +612,20 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # These W&B-hosted rates differ from each vendor's direct API pricing
     # (W&B marks up most Pro-tier models). Keyed on the full vendor-prefixed
     # model id because the wandb billing route preserves it.
-    # Re-apply after `hermes update` (source patch, not a config change).
+    # Fork-owned snapshot; retained across updates from the configured fork.
+    # DeepSeek V4.1 Flash: model card verified 2026-09-22; effective date
+    # for historical billing is not published. Backfills are estimates only.
+    (
+        "wandb",
+        "deepseek-ai/deepseek-v4.1-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.20"),
+        output_cost_per_million=Decimal("0.65"),
+        cache_read_cost_per_million=Decimal("0.03"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/inference/coreweave/cw_deepseek-ai_DeepSeek-V4.1-Flash",
+        pricing_version="wandb-deepseek-v4.1-flash-2026-09-22",
+    ),
     # GLM-5.3-Flash: public model card verified 2026-09-09. This supersedes
     # the provisional workspace rates; the card gives no historical effective date.
     (
