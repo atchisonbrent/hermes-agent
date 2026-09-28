@@ -26,7 +26,9 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
     )
 
     assert agent.api_mode == "codex_responses"
-    assert agent.context_compressor.context_length == 1_050_000
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+    assert agent.context_compressor.context_length == DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]
     kwargs = agent._get_transport().build_kwargs(
         model=agent.model,
         messages=[{"role": "user", "content": "Hi"}],
@@ -50,7 +52,7 @@ def test_astra_codex_oauth_fallback_uses_backend_context_limit():
     assert codex_ctx < DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]  # Codex caps below the direct API window
 
 
-@pytest.mark.parametrize("advertised,expected", [(272_000, 890_000), (200_000, 200_000), (1_050_000, 1_050_000)])
+@pytest.mark.parametrize("advertised,expected", [(272_000, 900_000), (200_000, 200_000), (1_050_000, 1_050_000)])
 def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, tmp_path, advertised, expected):
     """Only the known stale advertisement is lifted; the alias never reaches the wire."""
     from agent import model_metadata as metadata

@@ -1,44 +1,11 @@
-"""Native Responses compaction — gpt-5.6 and Astra on direct OpenAI routes only.
+"""Native OpenAI Responses server-side compaction on supported OpenAI routes.
 
-OpenAI's Responses API supports server-side compaction: include
-``context_management=[{"type": "compaction", "compact_threshold": N}]`` in a
-``/v1/responses`` request and, when the rendered input crosses N tokens, the
-server summarizes older context into an opaque ``compaction`` output item
-(``encrypted_content``, sealed to the issuing endpoint). Replaying that item
-as an input item on later requests stands in for the pruned history, so the
-model keeps long-horizon recall without the client ever seeing a summary.
-Docs: https://developers.openai.com/api/docs/guides/compaction
-
-Hermes' support is deliberately narrow (live verification, Aug–Sep 2026):
-
-* **gpt-5.6 family and gpt-6-astra.** gpt-5.6 and its variants compact correctly.
-  Astra emission and compaction-only replay verified on Codex OAuth, Sep 2026.
-  Sending the field to gpt-5.1 / gpt-5.2 reliably fails server-side —
-  HTTP 500 on the blocking path and a permanent stall on the streaming
-  path (90s watchdog x 3 retries = a dead turn). There is no structured
-  "unsupported" rejection to downgrade on, so the only safe gate is an
-  explicit model-family check.
-* **Direct OpenAI routes only:** api.openai.com (API key) or the ChatGPT
-  Codex backend (subscription OAuth). Every other Responses surface
-  (xAI, GitHub/Copilot, relays, local servers) never sees the field —
-  most would 400 on the unknown parameter, and none can mint or decrypt
-  the compaction blob.
-
-Ownership model: Hermes' local compression stays fully armed as the
-fallback owner. The native threshold is clamped safely below the local
-compressor's trigger so the server compacts first; if it doesn't (native
-disabled mid-session, provider hiccup, non-eligible route), the local
-summarizer fires exactly as before. There is no new custody state — the
-captured compaction items ride the existing ``codex_reasoning_items``
-sidecar, which already handles persistence (state.db), gateway session
-replay, cross-issuer stamping, and the encrypted-replay kill switch.
-
-This module stays free of transport/adapter dependencies so the transport,
-adapter, and conversation loop can share the gate without import cycles. The
-two exceptions — ``agent.context_compressor`` and ``agent.message_content`` —
-sit below this module in the dependency graph (neither imports
-``native_compaction``), so importing their provenance/text primitives here
-introduces no cycle.
+``context_management=[{"type": "compaction", "compact_threshold": N}]`` makes the server
+summarize older context into an opaque ``compaction`` item once the input crosses N tokens.
+Deliberately narrow: gpt-5.6 on api.openai.com or the ChatGPT Codex backend, plus exact
+gpt-6-astra on official Codex OAuth. The local compressor
+stays armed as fallback (native threshold clamped below the local trigger); compaction items
+ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
 """
 
 from __future__ import annotations
@@ -47,6 +14,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
+from agent.codex_headers import is_official_codex_base_url
 from agent.context_compressor import is_compaction_summary_message
 from agent.message_content import flatten_message_text
 
@@ -60,11 +28,16 @@ DEFAULT_COMPACT_THRESHOLD = 200_000
 _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
 
 
-def is_native_compaction_model(model: Optional[str]) -> bool:
-    """True for the verified gpt-5.6 family or exact Astra model."""
-    # Astra variants and vendor-prefixed IDs remain unverified and excluded.
-    normalized = (model or "").lower()
-    return _ELIGIBLE_MODEL_MARKER in normalized or normalized == "gpt-6-astra"
+def is_native_compaction_model(
+    model: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
+) -> bool:
+    """Preserve gpt-5.6 eligibility; Astra additionally requires official Codex OAuth."""
+    model_name = (model or "").lower()
+    return _ELIGIBLE_MODEL_MARKER in model_name or (
+        model_name == "gpt-6-astra"
+        and (provider or "").strip().lower() == "openai-codex"
+        and is_official_codex_base_url(base_url or "")
+    )
 
 
 def resolve_native_compaction_capabilities(
@@ -73,7 +46,7 @@ def resolve_native_compaction_capabilities(
     """Resolve the native-compaction capability for a runtime destination (a resolved ``False``
     is distinct from "unresolved" and must survive model switches unchanged)."""
     direct_default = (provider or "").strip().lower() == "openai" and not base_url
-    return {"native_compaction": is_native_compaction_model(model) and (
+    return {"native_compaction": is_native_compaction_model(model, provider=provider, base_url=base_url) and (
         direct_default or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend))}
 
 
@@ -151,7 +124,10 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
     if getattr(agent, "compression_checkpoint_required", False) is True:
         _warn_native_compaction_suppressed_by_checkpoint_gate()
         return None
-    if is_xai_responses or is_github_responses or not is_native_compaction_model(getattr(agent, "model", None)):
+    if is_xai_responses or is_github_responses or not is_native_compaction_model(
+        getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+        base_url=getattr(agent, "base_url", None),
+    ):
         return None
     trusted_proxy = bool(getattr(agent, "capabilities", {}).get("openai_native_compaction", False))
     if not trusted_proxy and not is_direct_openai_route(getattr(agent, "base_url", None), is_codex_backend=is_codex_backend):

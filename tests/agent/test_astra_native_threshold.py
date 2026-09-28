@@ -20,8 +20,8 @@ def test_loaded_astra_config_reaches_wire(tmp_path, monkeypatch):
         "    gpt-6-astra: 0.8\n"
     )
     agent = AIAgent(
-        api_key="x", base_url="https://api.openai.com/v1",
-        api_mode="codex_responses", model="gpt-6-astra", provider="openai-api",
+        api_key="x", base_url="https://chatgpt.com/backend-api/codex",
+        api_mode="codex_responses", model="gpt-6-astra", provider="openai-codex",
         quiet_mode=True, skip_context_files=True, skip_memory=True,
         enabled_toolsets=[],
     )
@@ -40,13 +40,13 @@ def test_loaded_astra_config_reaches_wire(tmp_path, monkeypatch):
 ])
 def test_missing_invalid_or_high_overrides_preserve_safety_clamp(value):
     agent = SimpleNamespace(
-        model="gpt-6-astra", base_url="https://api.openai.com/v1",
+        model="gpt-6-astra", provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex",
         codex_responses_native_compaction=True, compression_enabled=True,
         codex_responses_compact_threshold=400_000,
         codex_responses_model_thresholds=value,
         context_compressor=SimpleNamespace(threshold_tokens=217_600),
     )
-    assert native_compaction_context_management(agent, is_codex_backend=False) == [
+    assert native_compaction_context_management(agent, is_codex_backend=True) == [
         {"type": "compaction", "compact_threshold": 209_408}
     ]
 
