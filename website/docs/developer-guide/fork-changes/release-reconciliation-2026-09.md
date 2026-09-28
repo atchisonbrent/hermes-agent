@@ -54,6 +54,22 @@ Upstream status: not-filed; individual candidates retain their own records.
 - Fork CI: standard runners instead of unprovisioned billable runners; upstream
   mutation workflow remains upstream-only. No test reduction is introduced.
 
+## September 28 production-delta integration
+
+The release candidate also incorporates deployment commits through
+`a8d6bfcd5fb566204d7675c32454d033a700b8a9`: W&B DeepSeek V4.1 Flash pricing
+and the explicit GPT-6 Sol/Astra Codex variants. Their deployed 890K opt-in
+limits and 272K base limits are preserved; no provider call or larger limit
+is inferred. Independent source review identified a fourth regression file
+with the previous 900K Astra expectation; its failing test was reproduced and
+aligned with the deployed 890K contract. All four files then passed 206 tests
+in a clean, credential-free environment using the repository's per-file runner
+and the existing candidate Python 3.11 environment. Documentation now explicitly
+excludes GPT-6 Sol from the inherited autoraise families and limits the alias
+accounting claim to Codex OAuth. The all-tree unbounded compilation preamble was
+avoided; no installed live pytest guard was present. This is an integration
+checkpoint, not qualification or deployment of v2026.9.24.
+
 ## Verification and limits
 
 The expanded Python run exercised 56 files: 1335 passed, 6 skipped, zero failures,

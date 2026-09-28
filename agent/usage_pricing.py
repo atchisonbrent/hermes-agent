@@ -267,6 +267,15 @@ _OFFICIAL_DOCS_PRICING.update({
         source_url="https://platform.claude.com/docs/en/about-claude/pricing",
         pricing_version="anthropic-pricing-2026-09",
     ),
+    # Effective date for historical billing is not published.
+    ('wandb', 'deepseek-ai/deepseek-v4.1-flash'): PricingEntry(
+        input_cost_per_million=Decimal("0.20"),
+        output_cost_per_million=Decimal("0.65"),
+        cache_read_cost_per_million=Decimal("0.03"),
+        source="official_docs_snapshot",
+        source_url="https://wandb.ai/inference/coreweave/cw_deepseek-ai_DeepSeek-V4.1-Flash",
+        pricing_version="wandb-deepseek-v4.1-flash-2026-09-22",
+    ),
     ('wandb', 'zai-org/glm-5.3-flash'): PricingEntry(
         input_cost_per_million=Decimal("0.15"),
         output_cost_per_million=Decimal("0.50"),

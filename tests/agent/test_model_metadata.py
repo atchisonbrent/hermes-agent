@@ -644,8 +644,13 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
-    @pytest.mark.parametrize("slug", ["gpt-5.6-sol-900k", "gpt-daybreak-blue-latest-900k"])
-    def test_fallback_table_resolution_also_bumped(self, slug):
+    @pytest.mark.parametrize("slug,expected", [
+        ("gpt-5.6-sol-900k", 900_000),
+        ("gpt-daybreak-blue-latest-900k", 900_000),
+        ("gpt-6-sol-900k", 890_000),
+        ("gpt-6-astra-900k", 890_000),
+    ])
+    def test_fallback_table_resolution_also_bumped(self, slug, expected):
         """When the live probe fails, the 272K fallback-table value for an
         opted-in ``-900k`` variant is bumped the same way (same enforcement
         applies — the fallback lookup strips the suffix first)."""
@@ -663,9 +668,9 @@ class TestCodexOAuthContextLength:
                 api_key="expired-token",
                 provider="openai-codex",
             )
-        assert ctx == 900_000
+        assert ctx == expected
 
-    @pytest.mark.parametrize("slug", ["gpt-5.6-sol", "gpt-daybreak-blue-latest"])
+    @pytest.mark.parametrize("slug", ["gpt-5.6-sol", "gpt-daybreak-blue-latest", "gpt-6-sol", "gpt-6-astra"])
     def test_fallback_table_base_slug_stays_272k(self, slug):
         """Fallback-table resolution for BASE slugs stays at the advertised
         272K — the opt-in rule applies on the offline path too."""
@@ -690,6 +695,8 @@ class TestCodexOAuthContextLength:
     # validation, and wire stripping — this table pins all of them.
     # (model_id, is_valid_variant, expected_ctx, expected_wire_model)
     _900K_TABLE = [
+        ("gpt-6-sol-900k",                True,  890_000, "gpt-6-sol"),
+        ("gpt-6-astra-900k",              True,  890_000, "gpt-6-astra"),
         ("gpt-5.6-sol-900k",              True,  900_000, "gpt-5.6-sol"),
         ("gpt-5.6-terra-900k",            True,  900_000, "gpt-5.6-terra"),
         ("gpt-5.6-luna-900k",             True,  900_000, "gpt-5.6-luna"),
@@ -701,6 +708,7 @@ class TestCodexOAuthContextLength:
         ("openai/gpt-5.6-sol-900k",       True,  900_000, "openai/gpt-5.6-sol"),
         # -pro slugs are not routable on Codex OAuth: never a valid variant,
         # never stripped (fails honestly at the API instead)
+        ("gpt-6-sol-pro-900k",            False, 272_000, "gpt-6-sol-pro-900k"),
         ("gpt-5.6-sol-pro-900k",          False, 272_000, "gpt-5.6-sol-pro-900k"),
         # genuine 272K enforcers get no variant
         ("gpt-5.5-900k",                  False, 272_000, "gpt-5.5-900k"),

@@ -273,9 +273,9 @@ map.
 
 ### Codex gpt-5.x / Astra threshold autoraise
 
-The ChatGPT Codex OAuth backend hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at a **272K** context window
-(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
-GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
+The ChatGPT Codex OAuth catalog advertises a **272K** context window for
+gpt-5.4/5.5/5.6 and gpt-6 Astra; verified opt-in variants can use larger windows.
+At the default 50% trigger, compaction would fire at ~136K —
 half the window the model can actually use. When the active route is Codex
 OAuth (`provider: openai-codex`) and the model is one of those families (Astra
 matches any slug containing `astra`; the opt-in `-900k` picker variants are
@@ -309,13 +309,17 @@ window is strictly opt-in.
 
 To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
 `gpt-5.6-sol-900k`, `gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`,
-`gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
-the model id is sent to the backend, and pricing/usage accounting treats them
-as the base model. Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
+`gpt-5.4-900k`, `gpt-6-sol-900k`, `gpt-6-astra-900k`). The GPT-6 variants
+retain the deployed **890K** limit, below their verified 894,677-token pass;
+the older verified variants use 900K. These are Hermes-side aliases: the suffix is stripped before
+the model id is sent to the backend. On Codex OAuth these requests retain
+subscription-included accounting; the aliases do not establish direct-API prices.
+Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
 have no `-900k` variant.
 
-Compaction thresholds follow the window: base slugs (272K) get the **85%
-autoraise** described above, while `-900k` variants keep your global
+Compaction thresholds follow the window: the listed gpt-5.x and Astra base
+families get the **85% autoraise** described above; GPT-6 Sol does not.
+The `-900k` variants keep your global
 `compression.threshold` (default 50%, ~450K) — the autoraise exists to stop
 wasting a small window, which a 900K window doesn't need.
 

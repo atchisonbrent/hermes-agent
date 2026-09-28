@@ -42,6 +42,37 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
 
 
 
+def test_wandb_ds41_flash_cached_usage_matches_model_card(monkeypatch):
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *a, **k: {})
+    usage = normalize_usage(
+        SimpleNamespace(prompt_tokens=1_000_000, completion_tokens=100_000,
+                        prompt_tokens_details=SimpleNamespace(cached_tokens=800_000)),
+        provider="custom", api_mode="chat_completions",
+    )
+    for provider, base_url in (
+        ("wandb", None),
+        ("custom", "https://api.inference.wandb.ai/v1"),
+        ("custom", "https://api.inference.wandb.ai/v1/"),
+    ):
+        result = estimate_usage_cost("deepseek-ai/DeepSeek-V4.1-Flash", usage,
+                                     provider=provider, base_url=base_url)
+        assert result.amount_usd == Decimal("0.129")
+        entry = get_pricing_entry("deepseek-ai/DeepSeek-V4.1-Flash",
+                                  provider=provider, base_url=base_url)
+        assert entry is not None
+        assert entry.input_cost_per_million == Decimal("0.20")
+        assert entry.output_cost_per_million == Decimal("0.65")
+        assert entry.cache_read_cost_per_million == Decimal("0.03")
+        assert entry.cache_write_cost_per_million is None
+        assert result.status == "estimated"
+        assert result.source == "official_docs_snapshot"
+        assert result.pricing_version == "wandb-deepseek-v4.1-flash-2026-09-22"
+        unknown = estimate_usage_cost("deepseek-ai/DeepSeek-V4.1-Flash",
+                                      CanonicalUsage(cache_write_tokens=1),
+                                      provider=provider, base_url=base_url)
+        assert unknown.status == "unknown"
+
+
 def test_wandb_flash_cached_usage_matches_model_card(monkeypatch):
     """Price disjoint token buckets on named and endpoint-resolved W&B routes."""
     monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *a, **k: {})
