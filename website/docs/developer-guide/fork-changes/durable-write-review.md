@@ -18,7 +18,11 @@ No additional service, periodic reviewer, or host sandbox is owned by this delta
 
 An opt-in, proposal-only gate for supported memory and profile-local skill writes.
 Every acting model follows the same policy. Ordinary tasks do not invoke the
-reviewer; staged proposals run asynchronously through the existing pending store.
+reviewer. Automatic review completes within the calling persistence tool, using
+the existing pending store. Its result includes `saved`, `review_state`, and a
+specific message; staging is not reported as completed persistence. This trades
+background continuation during that one call for reliable outcome delivery on
+all tool surfaces. Other sessions and writers remain unblocked during inference.
 
 ```yaml
 durable_write_review:
@@ -31,7 +35,13 @@ durable_write_review:
 The reviewer model is configurable. This implementation supports the Codex OAuth
 route only: no API endpoint, model fallback, virtual context-window alias, tools,
 or autonomous rewrite. Each proposal makes at most one request, with a
-120-second transport deadline and two active reviewers per process. The endpoint
+120-second transport deadline and two active reviewers per process. The generic
+`timeouts.tools.sequential_call` and `timeouts.tools.concurrent_batch` deadlines
+must exceed that review time plus local I/O; their 420-second defaults do. Shorter
+configured tool deadlines or user interruption may abandon a still-running tool
+with unknown effects. Such a result requires record/target reconciliation, never
+an automatic retry. This feature does not override configured timeouts.
+The endpoint
 does not support an output-token cap; none is promised. Input is bounded by the
 configured byte limit, including instructions (default 64 KiB; range 1–128 KiB).
 Malformed values fail closed; blocked results name the configuration key, never
@@ -53,7 +63,10 @@ its value. Unexpected parser failures retain the generic refusal message.
   Sequential dispatch captures evidence at batch entry, so earlier tool results
   from that same batch are not yet available. Concurrent calls capture at their
   own entry and may see already-committed sibling results. Missing evidence
-  never authorizes an automatic write.
+  never authorizes an automatic write. Non-text tool results (images/audio) are
+  omitted as whole results and counted, without discarding earlier human text.
+  Multimodal human messages retain their verbatim text parts with an explicit
+  omitted-part count; image/audio contents are never inferred.
 - Cron, delegated, and dispatcher-owned Kanban goals are not human testimony. Background candidate authors
   preserve the original source provenance rather than supplying their own prompt.
 
@@ -89,8 +102,20 @@ filesystem transaction.
 
 Successful automatic writes and automatic rejections move to compact receipts under
 `pending/<subsystem>/receipts/`, with decision, model, hashes and returned usage.
-Other outcomes remain visible through `/memory pending` or `/skills pending`.
+Other outcomes remain visible through `/memory pending` or `/skills pending`,
+and are returned directly to the invoking model. Receipts and pending records
+retain the originating agent session/platform when available. Process death or
+transport cancellation can still interrupt response delivery: inspect the exact
+record, receipt and target before retrying; no automatic replay is introduced.
 Busy reviewer slots produce an explicit deferred reason without a model call.
+`saved` is the persistence authority: true for applied, false for known non-writes,
+null for uncertain application/receipt state. `success` can still describe valid
+manual staging and is not a substitute for `saved`. Pending CLI lists show the
+review state and reason. Background-review action summaries include refusals as
+well as applied outcomes, subject to the existing notification-mode setting and
+surface callback; no new cross-surface notification service is introduced.
+Unattended background memory deletion/replacement remains explicitly manual-only,
+even when the automatic reviewer accepts; it cannot bypass that existing guard.
 Manual approval can override ready, reviewing, accepted, or deferred proposals;
 a separate `<subsystem>.write_approval: true` still requires human approval for
 accepted proposals. Rejection is terminal even with that human gate enabled:
@@ -116,8 +141,8 @@ there is no periodic queue sweeper or escalating reviewer committee.
 Conservative secret detection can defer documentation containing credential-like
 assignments. It cannot identify every arbitrary unlabeled secret. Whole-config
 versioning intentionally defers even on unrelated concurrent config changes.
-Accepted writes do not refresh an active conversation's frozen prompt or toolset,
-and do not mirror into external memory providers. Native Windows locking requires
+Accepted/applied reviewed writes do not refresh an active conversation's frozen prompt or toolset,
+and remain builtin-only: outcome delivery does not enable external-provider mirroring. Native Windows locking requires
 platform-specific validation; unsupported locking defers automatic review.
 Windows lock contention is distinct from unsupported locking: the inherited
 `msvcrt` lock has a bounded native retry and can raise `OSError` before a writer

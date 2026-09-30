@@ -113,6 +113,7 @@ def review_config():
 
 
 _evidence = contextvars.ContextVar("durable_write_evidence", default=None)
+_review_origin: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("durable_write_origin", default=None)
 
 
 def machine_authored_turn(agent):
@@ -125,6 +126,22 @@ def machine_authored_turn(agent):
                     and is_dispatcher_owned_worker_context()))
 
 
+def _source_user_text(content):
+    if isinstance(content, str):
+        return content, 0
+    if not isinstance(content, list):
+        raise ValueError("Unsupported human source")
+    parts, omitted = [], 0
+    for part in content:
+        if isinstance(part, dict) and part.get("type") in {"text", "input_text"} and isinstance(part.get("text"), str):
+            parts.append(part["text"])
+        else:
+            omitted += 1
+    if not parts:
+        raise ValueError("Missing human text")
+    return "\n".join(parts), omitted
+
+
 @contextmanager
 def review_evidence(messages, *, machine_authored=False):
     """Capture bounded whole messages, never a generated source summary.
@@ -134,6 +151,7 @@ def review_evidence(messages, *, machine_authored=False):
     Machine-authored goals are not user testimony. Missing proof still defers.
     """
     source = []
+    omitted_nontext = 0
     try:
         from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
         from agent.conversation_compression import _is_real_user_message
@@ -162,7 +180,16 @@ def review_evidence(messages, *, machine_authored=False):
                     continue
                 provenance = {"tool_name": call["name"], "tool_request": call.get("arguments")}
             content = m.get("content")
+            if m["role"] == "user":
+                content, omitted_parts = _source_user_text(content)
+                if omitted_parts:
+                    provenance["omitted_nontext_parts"] = omitted_parts
             if not isinstance(content, str):
+                if m["role"] == "tool":
+                    # The text-only reviewer cannot inspect image/audio evidence.
+                    # Omit the whole result, not the human testimony preceding it.
+                    omitted_nontext += 1
+                    continue
                 raise ValueError("Non-text source")
             source.append({"id": f"source:{len(source)}", "role": m["role"], "text": content, **provenance})
         required = [s for s in source if s["role"] == "user"]
@@ -176,13 +203,19 @@ def review_evidence(messages, *, machine_authored=False):
         if not machine_authored:
             earlier = [m for m in messages[:start] if _is_real_user_message(m)]
             for index, message in enumerate(reversed(earlier)):
-                content = message.get("content")
+                try:
+                    content, omitted_parts = _source_user_text(message.get("content"))
+                except ValueError:
+                    omitted_users = len(earlier) - index
+                    break
                 item = {"id": f"source:{-index - 1}", "role": "user", "text": content}
+                if omitted_parts:
+                    item["omitted_nontext_parts"] = omitted_parts
                 if not isinstance(content, str) or len(_encoded(selected + [item]).encode()) > 15000:
                     omitted_users = len(earlier) - index
                     break
                 selected.append(item)
-        omitted = 0
+        omitted = omitted_nontext
         for item in reversed([s for s in source if s["role"] == "tool"]):
             if len(_encoded(selected + [item]).encode()) <= 16000:
                 selected.append(item)
@@ -215,8 +248,14 @@ def capture_review_evidence(fn):
         if messages is None:
             messages = bound.get("messages") or []
         machine = getattr(agent, "_durable_review_source_is_machine", machine_authored_turn(agent))
-        with review_evidence(messages, machine_authored=machine):
-            return fn(*args, **kwargs)
+        origin = {"session_id": str(getattr(agent, "session_id", "") or ""),
+                  "platform": str(getattr(agent, "platform", "") or "")}
+        token = _review_origin.set(origin)
+        try:
+            with review_evidence(messages, machine_authored=machine):
+                return fn(*args, **kwargs)
+        finally:
+            _review_origin.reset(token)
     return wrapped
 
 
@@ -253,9 +292,8 @@ def _pending_files(subsystem: str) -> list:
     return list(d.glob("*.json")) if d.exists() else []
 
 
-@serialized_write
 def stage_write(subsystem: str, payload: Dict[str, Any],
-                *, summary: str, origin: str) -> Dict[str, Any]:
+                *, summary: str, origin: str, require_manual: bool = False) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
 
     Args:
@@ -269,9 +307,42 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         origin: ``foreground`` or ``background_review`` — recorded for audit.
 
     Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
-    logs and still returns a record (the write is simply lost, which is the
-    safe failure for an approval gate — nothing is silently committed).
+    returns an explicit storage failure; no reviewer or write is attempted.
     """
+    with durable_write_lock():
+        record = _stage_write(subsystem, payload, summary=summary, origin=origin, require_manual=require_manual)
+    if record.get("review", {}).get("state") == "ready":
+        home = get_hermes_home()
+        ctx = contextvars.copy_context()
+        try:
+            started = _start_review(lambda: ctx.run(_process_review, subsystem, record["id"], home))
+        except Exception:
+            started = False
+        if started is False:
+            try:
+                with durable_write_lock():
+                    current = get_pending(subsystem, record["id"])
+                    if current and current.get("review", {}).get("state") == "ready":
+                        _finish_review(current, "defer", "Reviewer could not start or capacity unavailable; no call made")
+            except Exception:
+                logger.warning("Could not record deferred review outcome: %s/%s", subsystem, record["id"])
+        # The processor reloads records; do not report the pre-review object.
+        try:
+            pending = get_pending(subsystem, record["id"])
+            receipt = _pending_path(subsystem, record["id"]).parent / "receipts" / f"{record['id']}.json"
+            if pending:
+                record = pending
+            elif receipt.exists():
+                record = json.loads(receipt.read_text())
+            else:
+                record["review"] = {"state": "unknown", "reason": "Proposal disappeared; inspect target before retrying"}
+        except Exception:
+            record["review"] = {"state": "unknown", "reason": "Outcome readback unavailable; inspect target before retrying"}
+    return record
+
+
+def _stage_write(subsystem, payload, *, summary, origin, require_manual=False):
+    """Prepare under the shared write lock, without invoking the reviewer."""
     pid = uuid.uuid4().hex[:8]
     while _pending_path(subsystem, pid).exists():
         pid = uuid.uuid4().hex[:8]
@@ -282,6 +353,8 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         "summary": (summary or "").strip(),
         "origin": origin or "foreground",
         "created_at": time.time(),
+        "source_origin": dict(_review_origin.get() or {}),
+        "requires_manual_approval": require_manual,
         "payload": payload,
     }
     auto_config = None
@@ -292,25 +365,35 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
             record["review"] = {"state": "ready", "context": context, "config": auto_config}
     except _ReviewRefusal as exc:
         record["review"] = {"state": "defer", "reason": str(exc)}
-    except Exception:
-        record["review"] = {"state": "defer", "reason": "Required review context unavailable"}
+    except Exception as exc:
+        record["review"] = {"state": "defer", "reason": "Required review context unavailable",
+                            "error_type": type(exc).__name__}
     try:
         atomic_json_write(_pending_path(subsystem, pid), record)
-        if auto_config and record.get("review", {}).get("state") == "ready":
-            ctx = contextvars.copy_context()
-            home = get_hermes_home()
-            try:
-                started = _start_review(lambda: ctx.run(_process_review, subsystem, pid, home))
-                reason = "Reviewer capacity unavailable; no call made"
-            except Exception:
-                started = False
-                reason = "Reviewer could not start; no call made"
-            if started is False:
-                record["review"] = {"state": "defer", "reason": reason}
-                _save_record(record)
-    except Exception as e:  # pragma: no cover - disk failure path
-        logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+    except Exception:  # disk failure: never claim staging succeeded
+        record["review"] = {"state": "storage_error", "reason": "Pending record could not be persisted"}
+        logger.warning("Failed to stage pending %s write", subsystem)
     return record
+
+
+def staging_result(record, *, message=""):
+    """Report the state actually persisted, not the earlier gate's intention."""
+    review = record.get("review", {})
+    state = review.get("state", "manual")
+    failed = state not in {"applied", "manual", "accepted"}
+    if state == "applied":
+        message = "Saved after review."
+    elif state in {"applying", "unknown", "reviewing"}:
+        message = "Outcome uncertain; inspect the pending record, receipt and target before any retry."
+    elif failed:
+        message = f"Not saved: {review.get('reason', 'Review did not complete')}. No automatic retry."
+    elif state == "accepted":
+        message = "Not saved: review accepted; human approval still required."
+
+    saved = None if state in {"applying", "unknown", "reviewing"} else state == "applied"
+    return {"success": not failed, "saved": saved,
+            "staged": state not in {"applied", "reject", "storage_error"},
+            "pending_id": record["id"], "review_state": state, "message": message}
 
 
 def list_pending(subsystem: str) -> List[Dict[str, Any]]:
@@ -400,7 +483,7 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: st
     is produced only when the user actively denies the inline prompt."""
     try:
         if review_config():
-            return GateDecision(stage=True, message="Staged for automatic review; not yet saved. Continue the task.")
+            return GateDecision(stage=True, message="Not saved: staged for human approval.")
     except _ReviewRefusal as exc:
         return GateDecision(blocked=True, message=f"{exc}; write refused.")
     except Exception:
@@ -532,7 +615,9 @@ specific and actionable, not vague. Do not move a proposal to another owner.
 Check full current USER/MEMORY, owner files, and original source. If the independent
 source does not demonstrate the claim, recurrence, or defect, defer or reject.
 Source is a bounded window of whole messages. The context-level omitted_source_results count means
-other results were excluded for size, not that they support the proposal.
+other results were excluded for size or non-text modality, not that they support
+the proposal. Source-level omitted_nontext_parts counts omitted human image/audio
+parts. Only supplied text is evidence; never infer attachment contents.
 Source-level omitted_user_messages counts excluded earlier human messages. Earlier
 human messages are verbatim antecedents, not authorization to ignore later
 corrections. Synthetic recovery and compression messages are excluded. Never
@@ -555,9 +640,9 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
     from tools.memory_tool import MemoryStore, fcntl, msvcrt
     from agent.redact import redact_sensitive_text
     if fcntl is None and msvcrt is None:
-        raise ValueError("Automatic review requires process locking")
+        raise _ReviewRefusal("Automatic review requires process locking")
     if not source:
-        raise ValueError("Original source evidence missing")
+        raise _ReviewRefusal("Original source evidence missing")
     limit = config["max_input_bytes"]
     source = [dict(item) for item in source]
     omitted = omitted_source_results + sum(item.pop("omitted_tool_results", 0) for item in source)
@@ -575,16 +660,16 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
             raise _ReviewRefusal("Symlinked profile path requires human review; automatic review not started")
         absolute = path.absolute()
         if not absolute.is_relative_to(home):
-            raise ValueError("External owner requires human review")
+            raise _ReviewRefusal("External owner requires human review")
         if any(p.is_symlink() for p in (absolute, *absolute.parents) if p.is_relative_to(home)):
-            raise ValueError("Symlink context")
+            raise _ReviewRefusal("Symlink context")
         try:
             with path.open("rb") as stream:
                 stat = os.fstat(stream.fileno())
                 data = stream.read(limit + 1)
             size += len(data)
             if size > limit:
-                raise ValueError("Oversize context")
+                raise _ReviewRefusal("Oversize context")
             text = data.decode("utf-8")
             version = [stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size,
                        hashlib.sha256(data).hexdigest()]
@@ -606,7 +691,7 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
         for op in ops:
             name = op.get("name") or payload.get("name")
             if not name or _validate_name(name):
-                raise ValueError("Invalid skill owner")
+                raise _ReviewRefusal("Invalid skill owner")
             found = _find_skill(name)
             root = Path(found["path"]) if found else _resolve_skill_dir(name, op.get("category"))
             if name in owners:
@@ -614,19 +699,19 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
             owners[name] = str(root.absolute())
             capture(f"{name}/SKILL.md", root / "SKILL.md")
             if found and context["files"][f"{name}/SKILL.md"]["text"] is None:
-                raise ValueError("Missing skill owner")
+                raise _ReviewRefusal("Missing skill owner")
             # Complete owner package: deletion, references, and security scans
             # can depend on files beyond the immediate patch target.
             if root.exists():
                 for directory, dirs, files in os.walk(root, followlinks=False):
                     if any((Path(directory) / d).is_symlink() for d in dirs):
-                        raise ValueError("Symlink owner")
+                        raise _ReviewRefusal("Symlink owner")
                     for filename in sorted(files):
                         path = Path(directory) / filename
                         if path == root / "SKILL.md":
                             continue
                         if len(context["files"]) >= 128:
-                            raise ValueError("Too many owner files")
+                            raise _ReviewRefusal("Too many owner files")
                         capture(f"{name}/{path.relative_to(root).as_posix()}", path)
         context["owners"] = owners
         # Required originals must exist, or have been supplied by an earlier
@@ -645,26 +730,26 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
             target = root / file_path
             error = validate_within_dir(target, root)
             if error:
-                raise ValueError("Invalid affected file")
+                raise _ReviewRefusal("Invalid affected file")
             label = f"{name}/{target.resolve().relative_to(root.resolve()).as_posix()}"
             if action != "create" and owner not in available:
-                raise ValueError("Missing skill owner")
+                raise _ReviewRefusal("Missing skill owner")
             if action in {"patch", "edit", "remove_file"} and label not in available:
-                raise ValueError("Missing affected file")
+                raise _ReviewRefusal("Missing affected file")
             if action == "remove_file":
                 available.discard(label)
             else:
                 available.add(label)
     raw = _encoded(context)
     if len(raw.encode()) + len(_REVIEW_POLICY.encode()) > limit:
-        raise ValueError("Oversize context")
+        raise _ReviewRefusal("Oversize context")
     # Do not review a redacted approximation of the exact payload/context.
     # Secret-bearing proposals stay pending locally without any model call.
     def check_strings(value):
         if isinstance(value, str):
             if (redact_sensitive_text(value, force=True, redact_url_credentials=True) != value
                     or re.search(r"(?i)\b(?:password|passwd|api_key|access_token|refresh_token|secret)\s*[:=]\s*\S+", value)):
-                raise ValueError("Sensitive review context")
+                raise _ReviewRefusal("Sensitive review context")
         elif isinstance(value, dict):
             for item in value.values():
                 check_strings(item)
@@ -676,21 +761,15 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
 
 
 def _start_review(callback):
-    # No queue/polling/restart replay. Bound outstanding calls; busy proposals
-    # remain pending for human review. Daemon workers never hold task shutdown.
+    # Complete on the invoking tool's thread: its result is the delivery channel.
+    # The existing transport deadline and capacity bound remain unchanged.
     if not _review_slots.acquire(blocking=False):
         return False
-    def run():
-        try:
-            callback()
-        finally:
-            _review_slots.release()
     try:
-        threading.Thread(target=run, name="durable-write-review", daemon=True).start()
+        callback()
         return True
-    except Exception:
+    finally:
         _review_slots.release()
-        raise
 
 
 _review_slots = threading.BoundedSemaphore(2)
@@ -786,6 +865,7 @@ def _finish_review(record, state, reason, *, usage=None, evidence=None):
         receipts = path.parent / "receipts"
         receipts.mkdir(exist_ok=True)
         receipt = {k: record[k] for k in ("id", "subsystem", "origin", "review")}
+        receipt["source_origin"] = record.get("source_origin", {})
         from utils import atomic_write_text
         atomic_write_text(receipts / path.name, json.dumps(receipt, ensure_ascii=False))
         path.unlink()
@@ -833,7 +913,7 @@ def _process_review(subsystem, pending_id, home):
                                             omitted_source_results=context["omitted_source_results"])
                     if fresh != context or review_config() != config:
                         raise ValueError("Stale proposal")
-                    if write_approval_enabled(subsystem):
+                    if record.get("requires_manual_approval") or write_approval_enabled(subsystem):
                         _finish_review(record, "accepted", "Automatic review accepted; human approval still required",
                                        usage=usage, evidence=decision["evidence"])
                         return

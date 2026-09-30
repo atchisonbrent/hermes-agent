@@ -29,6 +29,15 @@ def test_applied_skill_operations_notify_with_names(tmp_path, monkeypatch):
     assert not (tmp_path / "skills" / name).exists()
 
 
+def test_manual_staging_from_live_writer_is_not_a_review_notice(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("skills:\n  write_approval: true\n")
+    args = {"operations": [{"name": "pending", "action": "create", "content": "---\nname: pending\ndescription: Test staging.\n---\nTest."}]}
+    data = json.loads(skill_manage(action="", name="", **args))
+    assert data["review_state"] == "manual"
+    assert summarize_background_review_actions(_messages(args, data), []) == []
+
+
 def test_unapplied_skill_operations_never_notify():
     args = {"operations": [{"name": "pending", "action": "create"}]}
     for data in (

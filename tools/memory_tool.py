@@ -96,8 +96,7 @@ def _gate_or_stage(store: "MemoryStore", summary: str, detail: str, payload: Dic
     if (unmatched := _pin_matched_entries(store, payload)) is not None:
         return unmatched
     record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
-    return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
-                      ensure_ascii=False)
+    return json.dumps(wa.staging_result(record, message=decision.message), ensure_ascii=False)
 
 
 # action -> (store call, gate (summary, detail) text) for the live tool path and staged replay.
@@ -190,13 +189,15 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             wa.MEMORY, payload,
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
                      f"on {target}): {detail}")[:200],
-            origin=wa.current_origin())
-        return json.dumps({
-            "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
-        }, ensure_ascii=False)
+            origin=wa.current_origin(), require_manual=True)
+        result = wa.staging_result(record, message=(
+            "Background review may not delete memory entries unattended. The proposed "
+            f"{'batch' if operations is not None else action} was staged for your approval — "
+            "review it with /memory pending (approve to apply, discard to drop)."))
+        result["proposal_staged"] = result["staged"]
+        if result["staged"] and result["review_state"] != "manual":
+            result["message"] += " Inspect /memory pending before approving, discarding, or proposing again."
+        return json.dumps(result, ensure_ascii=False)
     except Exception:
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
         return tool_error(

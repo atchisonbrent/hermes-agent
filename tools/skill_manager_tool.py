@@ -22,7 +22,6 @@ import yaml
 
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_write_text, is_truthy_value
-from tools.write_approval import serialized_write
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
@@ -626,8 +625,7 @@ def _run_write_gate(build_staging):
         return tool_error(decision.message, success=False)
     payload, gist = build_staging(wa)
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
-    return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
-                       "gist": gist, "message": decision.message}, ensure_ascii=False)
+    return json.dumps({**wa.staging_result(record, message=decision.message), "gist": gist}, ensure_ascii=False)
 
 
 def _apply_skill_write_gate(action, name, **payload_kwargs):
@@ -760,7 +758,6 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         _maybe_debounced_sync_push(name)
 
 
-@serialized_write
 def skill_manage(
     action: str, name: str, content: str = None, category: str = None, file_path: str = None,
     file_content: str = None, old_string: str = None, new_string: str = None,
@@ -789,7 +786,10 @@ def skill_manage(
     # A mutation is read-modify-write even when its action eventually delegates
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
     # and the atomic replacement all belong to the same ownership window.
-    with _skill_mutation_lock(name):
+    from tools.write_approval import durable_write_lock
+    with durable_write_lock(), _skill_mutation_lock(name):
+        if (preflight := _background_review_preflight(action, name)) is not None:
+            return json.dumps(preflight, ensure_ascii=False)
         # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
         # destroys the whole package (consolidation may have re-homed support files first), so
         # complete it from the newest curator backup or a restore is hollow.

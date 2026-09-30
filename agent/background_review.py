@@ -752,6 +752,9 @@ def _prior_tool_keys(prior_snapshot: List[Dict]) -> Tuple[set, set]:
 
 def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     """Summary line(s) for one successful notify-tool result (``[]`` when nothing to report)."""
+    if data.get("review_state") not in (None, "manual") and detail.get("tool") in {"memory", "skill_manage"}:
+        label = "Skill" if detail["tool"] == "skill_manage" else "Memory"
+        return [f"{label} review {data['review_state']}: {data.get('message', '')}"]
     if data.get("staged"):
         # The fork's own review summary is never published back, so an unattended-review
         # consolidation proposal must surface here or it is silently lost (#105921).
@@ -820,9 +823,13 @@ def summarize_background_review_actions(
             continue
         # Wrapper MCP servers may return a top-level list/scalar; only dict payloads carry
         # ``success``/``_change``.
-        if not isinstance(data, dict) or not data.get("success"):
+        if not isinstance(data, dict):
             continue
-        actions.extend(_action_lines(data, call_details.get(tcid) or {}, verbose))
+        detail = call_details.get(tcid) or {}
+        review_outcome = data.get("review_state") and detail.get("tool") in {"memory", "skill_manage"}
+        if not data.get("success") and not review_outcome:
+            continue
+        actions.extend(_action_lines(data, detail, verbose))
     return actions
 
 

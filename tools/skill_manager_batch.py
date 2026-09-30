@@ -224,7 +224,8 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
     # Every target's lock is held from the snapshot through commit or rollback; the per-op
     # skill_manage() calls re-enter them. Without the outer fence a concurrent writer landing
     # between the snapshot and a rollback would be silently reverted.
-    with _smt._skill_mutation_locks(names):
+    from tools.write_approval import durable_write_lock
+    with durable_write_lock(), _smt._skill_mutation_locks(names):
         snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
         snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill)
         if snap_err is not None:

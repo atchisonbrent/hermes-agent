@@ -23,6 +23,11 @@ def _fmt_pending_list(subsystem: str) -> str:
         origin = r.get("origin", "foreground")
         tag = " [auto]" if origin == "background_review" else ""
         lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
+        review = r.get("review") or {}
+        if review:
+            reason = " ".join(str(review.get("reason", "")).split())
+            suffix = f" — {reason}" if reason else ""
+            lines.append(f"      Review: {review.get('state', 'unknown')}{suffix}")
         if subsystem == wa.MEMORY:
             lines.extend(f"      {line}" for line in _matched_entries(r["payload"]))
     lines.append("")

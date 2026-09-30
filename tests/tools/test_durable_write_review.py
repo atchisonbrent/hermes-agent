@@ -404,34 +404,31 @@ wa._process_review("memory", sys.argv[2], home)
     assert (home / "memories/USER.md").read_text().count("Prefers concise replies.") == 1
 
 
-def test_real_background_worker_does_not_block_task_or_overwrite_concurrent_write(review, monkeypatch):
+def test_review_waits_for_outcome_without_blocking_concurrent_writers(review, monkeypatch):
     import threading
     wa, jobs, home = review
     from tools.memory_tool import MemoryStore
-    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    entered, release = threading.Event(), threading.Event()
+    results = []
     def decide(*a):
         entered.set()
         assert release.wait(10)
         return answer()
     monkeypatch.setattr(wa, "_review_call", decide)
-    # Restore the real scheduler, replacing only the network call.
     monkeypatch.setattr(wa, "_start_review", jobs.start_review)
-    original = wa._process_review
-    def process(*a):
-        try:
-            return original(*a)
-        finally:
-            finished.set()
-    monkeypatch.setattr(wa, "_process_review", process)
+    caller = threading.Thread(target=lambda: results.append(staged_memory(wa)))
+    caller.start()
     try:
-        result = staged_memory(wa)
-        assert result["staged"]
         assert entered.wait(10)
-        # The reviewer is still waiting; a normal supported write can finish.
+        assert caller.is_alive()
+        assert not results  # no optimistic result while the reviewer is active
         assert MemoryStore().add("user", "Concurrent entry")["success"]
     finally:
         release.set()
-        assert finished.wait(10)
+        caller.join(10)
+    assert not caller.is_alive()
+    assert results[0]["review_state"] == "defer"
+    assert results[0]["saved"] is False
     assert "Prefers concise replies" not in (home / "memories/USER.md").read_text()
 
 
