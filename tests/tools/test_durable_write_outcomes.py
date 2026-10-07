@@ -89,6 +89,64 @@ def test_origin_is_isolated_and_retained_in_receipt(tmp_path, monkeypatch):
     assert wa._review_origin.get() is None
 
 
+@pytest.mark.parametrize('enabled', [False, True])
+def test_review_config_uses_utf8_on_non_utf8_hosts(tmp_path, monkeypatch, enabled):
+    from pathlib import Path
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    config = tmp_path / 'config.yaml'
+    config.write_text('# 日本語\ndurable_write_review:\n  enabled: ' + str(enabled).lower() + '\n', encoding='utf-8')
+    path_open = Path.open
+
+    def non_utf8_default(path, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+        if 'b' not in mode and encoding is None:
+            encoding = 'ascii'
+        return path_open(path, mode, buffering, encoding, errors, newline)
+
+    monkeypatch.setattr(Path, 'open', non_utf8_default)
+    result = wa.review_config()
+    assert (result is not None) is enabled
+
+
+def test_completed_receipt_uses_utf8_on_non_utf8_hosts(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    record = {'id': 'utf8test', 'review': {'state': 'ready'}}
+    monkeypatch.setattr(wa, '_stage_write', lambda *a, **kw: record)
+    monkeypatch.setattr(wa, 'get_pending', lambda *a: None)
+    receipt = tmp_path / 'pending/memory/receipts/utf8test.json'
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps({'id': 'utf8test', 'summary': '日本語',
+                                  'review': {'state': 'applied'}}, ensure_ascii=False), encoding='utf-8')
+    monkeypatch.setattr(wa, '_start_review', lambda callback: True)
+    read_text = Path.read_text
+
+    def non_utf8_default(path, encoding=None, errors=None, **kwargs):
+        return read_text(path, encoding=encoding or 'ascii', errors=errors, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', non_utf8_default)
+    result = wa.stage_write('memory', {}, summary='日本語', origin='foreground')
+    assert result['review']['state'] == 'applied'
+    assert result['summary'] == '日本語'
+
+
+@pytest.mark.parametrize('receipt_text', ['sensitive-receipt-sentinel', '[]', '"sensitive-receipt-sentinel"'])
+def test_bad_receipt_readback_reports_unknown_without_leaking_bytes(tmp_path, monkeypatch, caplog, receipt_text):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    record = {'id': 'badjson', 'review': {'state': 'ready'}}
+    monkeypatch.setattr(wa, '_stage_write', lambda *a, **kw: record)
+    monkeypatch.setattr(wa, 'get_pending', lambda *a: None)
+    receipt = tmp_path / 'pending/memory/receipts/badjson.json'
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(receipt_text, encoding='utf-8')
+    monkeypatch.setattr(wa, '_start_review', lambda callback: True)
+    result = wa.stage_write('memory', {}, summary='test', origin='foreground')
+    assert result['review']['state'] == 'unknown'
+    assert 'Durable-write outcome readback unavailable: memory/badjson' in caplog.text
+    assert 'sensitive-receipt-sentinel' not in caplog.text
+
+
 def test_uncertain_application_is_not_reported_as_unsaved(tmp_path, monkeypatch):
     from tools import memory_tool as mt
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

@@ -296,9 +296,38 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # N-1 = `git describe --tags --abbrev=0 HEAD~1`.
+          # Default N-1 uses git describe; forks select an explicit upstream
+          # release below because their mirrored tags may lag the merged code.
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Fetch upstream release refs on forks
+        if: github.repository != 'NousResearch/hermes-agent'
+        # Fork release tags may lag the merged code by months. Keep upstream
+        # tags separate: neither overwrite fork tags nor merge upstream branches.
+        uses: ./.github/actions/retry
+        with:
+          command: >-
+            git fetch --no-tags https://github.com/NousResearch/hermes-agent.git
+            'refs/tags/v20*:refs/upstream-release-tags/v20*'
+
+      - name: Select upstream release baseline on forks
+        if: github.repository != 'NousResearch/hermes-agent'
+        run: |
+          baseline=''
+          while IFS= read -r ref; do
+            if [[ "$ref" =~ ^refs/upstream-release-tags/v20[0-9]{2}\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+              baseline="$ref"
+              break
+            fi
+          done < <(git for-each-ref --merged=HEAD~1 --sort=-version:refname \
+            --format='%(refname)' 'refs/upstream-release-tags/v20*')
+          test -n "$baseline"
+          git merge-base --is-ancestor "$baseline^{commit}" HEAD~1
+          baseline_sha=$(git rev-parse "$baseline^{commit}")
+          printf 'HERMES_E2E_UPGRADE_BASE=%s\n' "$baseline_sha" >> "$GITHUB_ENV"
+          printf 'Upgrade baseline: %s (%s), %s commits to HEAD\n' \
+            "$baseline" "$baseline_sha" "$(git rev-list --count "$baseline_sha..HEAD")"
 
       - name: Set up Node
         # `hermes update` builds the web UI / TUI workspaces.

@@ -8,7 +8,7 @@ back into context. Three rules follow, all keyed on the same session marker the 
 delegation dispatcher already read (``HERMES_SINGLE_QUERY_SESSION``), so interactive sessions are untouched:
 
 * ``skill_manage`` is not offered (``skills_list``/``skill_view`` stay: reading a domain skill can still win);
-* the ## Skills prompt drops the "record it / patch it / offer to save" coaching and the "load process skills
+* the ## Skills prompt drops interactive skill-maintenance coaching and the "load process skills
   even for tasks you already know" push, keeping only "load a skill when it adds knowledge you lack";
 * delegation is capped per session (``delegation.oneshot_max_children``): subagents each re-pay a cold
   system prompt and re-explore the repo, and the observed spawns were mostly "independent review of my own

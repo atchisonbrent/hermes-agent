@@ -83,7 +83,7 @@ def review_config():
     # A persistence authorization gate must not use that fallback.
     from utils import fast_safe_load
     try:
-        with (get_hermes_home() / "config.yaml").open() as stream:
+        with (get_hermes_home() / "config.yaml").open(encoding="utf-8") as stream:
             raw = fast_safe_load(stream)
     except FileNotFoundError:
         raw = {}
@@ -333,10 +333,14 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
             if pending:
                 record = pending
             elif receipt.exists():
-                record = json.loads(receipt.read_text())
+                readback = json.loads(receipt.read_text(encoding="utf-8"))
+                if not isinstance(readback, dict):
+                    raise ValueError("Receipt must be a JSON object")
+                record = readback
             else:
                 record["review"] = {"state": "unknown", "reason": "Proposal disappeared; inspect target before retrying"}
         except Exception:
+            logger.warning("Durable-write outcome readback unavailable: %s/%s", subsystem, record["id"])
             record["review"] = {"state": "unknown", "reason": "Outcome readback unavailable; inspect target before retrying"}
     return record
 

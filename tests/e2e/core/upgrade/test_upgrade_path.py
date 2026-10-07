@@ -3,7 +3,8 @@
 Class C6 (bricked installs, stale code, lost state after `hermes update`). Each leg:
 
 1. stages a local bare ``origin`` (``--shared`` onto this repository, so no network and no
-   object copy) with ``main`` parked at release N-1 (``git describe --tags --abbrev=0 HEAD~1``);
+   object copy) with ``main`` parked at release N-1 (explicit ``HERMES_E2E_UPGRADE_BASE``
+   in fork CI; otherwise ``git describe --tags --abbrev=0 HEAD~1``);
 2. clones it as a git-mode install with its own venv (``uv sync --locked --extra all`` from N-1's
    own uv.lock and the warm uv cache: the installer's tier 0 and its editable layout; the installer
    script itself is covered by ``.github/workflows/install-e2e*.yml``);
@@ -102,16 +103,22 @@ class _Refs(NamedTuple):
 def _refs() -> _Refs:
     """HEAD and release N-1, resolved on first use: collection (every CI shard) runs no git.
 
-    N-1 is ``git describe --tags --abbrev=0 HEAD~1``; HERMES_E2E_UPGRADE_BASE=<ref> starts from any
+    Without an explicit override, N-1 is ``git describe --tags --abbrev=0 HEAD~1``.
+    HERMES_E2E_UPGRADE_BASE=<ref> starts from any
     older ref instead (e.g. the pre-handoff v2026.9.14, or a patched base when proving a leg red
     against the N-1 side).
     """
     head = _git("rev-parse", "HEAD", cwd=H.WORKTREE)
+    explicit = os.environ.get("HERMES_E2E_UPGRADE_BASE")
     try:
-        tag = os.environ.get("HERMES_E2E_UPGRADE_BASE") or _git("describe", "--tags", "--abbrev=0", "HEAD~1",
+        tag = explicit or _git("describe", "--tags", "--abbrev=0", "HEAD~1",
                                                                   cwd=H.WORKTREE)
-        return _Refs(head, tag, _git("rev-parse", f"{tag}^{{commit}}", cwd=H.WORKTREE))
+        base = _git("rev-parse", f"{tag}^{{commit}}", cwd=H.WORKTREE)
+        print(f"Upgrade suite baseline: {tag} ({base}); bwrap={H.BWRAP_OK}; SQLite={sqlite3.sqlite_version}")
+        return _Refs(head, tag, base)
     except AssertionError:  # shallow CI checkout without tags
+        if explicit:
+            raise  # a configured but invalid baseline must never turn into a skip
         return _Refs(head, "", "")
 
 
@@ -358,6 +365,10 @@ def make_leg(root: Path, template_home: Path | None) -> Leg:
         shutil.copytree(template_home, hermes_home, symlinks=True)
     wrap = _write_wrappers(root, install, hermes_home)
     env = H.isolated_env(root, extra_path=[wrap])
+    # The module's live_system_guard_bypass marker applies only to pytest's
+    # interpreter. Child ancestry detection still treats its synthetic HOME
+    # as production; opt in for this throwaway install, never the parent env.
+    env["HERMES_STATE_DB_GUARD_BYPASS"] = "1"
     return Leg(root=root, origin=origin, install=install, env=env, hermes_home=hermes_home, wrap_dir=wrap)
 
 
@@ -369,8 +380,15 @@ def make_leg(root: Path, template_home: Path | None) -> Leg:
 def db_fingerprint(db: Path) -> dict:
     """integrity + per-table row counts + a digest of every pre-existing message."""
     assert db.exists(), f"{db} missing"
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    journal_present = db.with_name(db.name + "-journal").exists()
+    # These are disposable install databases. Permit SQLite's own recovery of
+    # a hot journal after an exited writer; read-only opens cannot do that.
+    # mode=rw still refuses to create a missing DB, and all row/digest/integrity
+    # assertions below remain authoritative after recovery.
+    con = sqlite3.connect(f"file:{db}?mode=rw", uri=True)
     try:
+        mode = con.execute("PRAGMA journal_mode").fetchone()[0]
+        print(f"Upgrade database observation: {db}; journal_before_open={journal_present}; journal_mode={mode}")
         integrity = con.execute("PRAGMA integrity_check").fetchall()
         tables = [r[0] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
@@ -529,9 +547,13 @@ def template_home(tmp_path_factory, provider) -> Path:
     cfg = user_config(provider.base_url, version)
     (seed.hermes_home / "config.yaml").write_text(cfg, encoding="utf-8")
     (seed.hermes_home / ".env").write_text("OPENAI_API_KEY=sk-fake-e2e\n", encoding="utf-8")
-    for prompt in ("first session before the upgrade", "second session before the upgrade"):
+    for count, prompt in enumerate(("first session before the upgrade", "second session before the upgrade"), 1):
+        requests_before = len(provider.main_requests())
         cp = seed.run("-z", prompt)
         assert cp.returncode == 0, H.describe(cp)
+        assert len(provider.main_requests()) == requests_before + 1, "seed turn did not reach the provider once"
+        assert len(db_fingerprint(seed.hermes_home / "state.db")["sessions"]) == count, (
+            "seed turn was not persisted before the upgrade:\n" + H.describe(cp))
     cp = seed.run("profile", "create", "work", "--no-alias")
     assert cp.returncode == 0, H.describe(cp)
     work = seed.hermes_home / "profiles" / "work"
@@ -539,6 +561,7 @@ def template_home(tmp_path_factory, provider) -> Path:
     (work / ".env").write_text("OPENAI_API_KEY=sk-fake-e2e-work\n", encoding="utf-8")
     cp = seed.run("-p", "work", "-z", "work profile session before the upgrade")
     assert cp.returncode == 0, H.describe(cp)
+    assert len(db_fingerprint(work / "state.db")["sessions"]) == 1, "work-profile seed turn was not persisted"
     cp = seed.run("cron", "create", "--name", "nightly", "0 3 * * *", "summarize the day")
     assert cp.returncode == 0, H.describe(cp)
     # Configs were written by hand AFTER the N-1 CLI touched them; re-pin them to the user's bytes.
@@ -595,6 +618,42 @@ def clean_leg(tmp_path_factory, template_home):
     lg.snapshot = snapshot_state(lg)
     _publish_head(lg)
     return lg, _update(lg)
+
+
+def test_explicit_upgrade_base_must_resolve(monkeypatch):
+    monkeypatch.setenv("HERMES_E2E_UPGRADE_BASE", "refs/does-not-exist/upgrade-fixture")
+    _refs.cache_clear()
+    try:
+        with pytest.raises(AssertionError):
+            _refs()
+    finally:
+        _refs.cache_clear()
+
+
+def test_db_fingerprint_recovers_a_committed_database_after_writer_exit(tmp_path):
+    """A crash can leave a hot rollback journal; observation must recover it."""
+    import sys
+
+    db = tmp_path / "state.db"
+    with contextlib.closing(sqlite3.connect(db)) as con:
+        con.executescript(
+            "CREATE TABLE sessions(id TEXT);"
+            "CREATE TABLE messages(id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT);")
+        con.execute("INSERT INTO sessions VALUES ('seed')")
+        con.executemany("INSERT INTO messages VALUES (?, 'seed', 'user', ?)",
+                        [(i, "committed" * 512) for i in range(100)])
+        con.commit()
+    before = db_fingerprint(db)
+    subprocess.run([sys.executable, "-c", """
+import os, sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute('PRAGMA cache_size=1')
+con.execute('BEGIN IMMEDIATE')
+con.execute("UPDATE messages SET content = ?", ('uncommitted' * 512,))
+os._exit(0)
+""", str(db)], check=True, timeout=30)
+    assert db.with_name("state.db-journal").exists(), "writer did not leave the intended journal"
+    assert db_fingerprint(db) == before, "recovery changed previously committed state"
 
 
 def test_clean_update(clean_leg, provider):

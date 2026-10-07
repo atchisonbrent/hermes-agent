@@ -329,7 +329,8 @@ class TestBlockingApprovalE2E:
 
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         session_key = "e2e-timeout"
-        register_gateway_notify(session_key, lambda d: None)
+        notified = threading.Event()
+        register_gateway_notify(session_key, lambda d: notified.set())
 
         result_holder = [None]
 
@@ -354,15 +355,21 @@ class TestBlockingApprovalE2E:
 
         t = threading.Thread(target=agent_thread)
         t.start()
-        t.join(timeout=1)
-        if t.is_alive():
-            resolve_gateway_approval(session_key, "deny")
+        try:
+            # Wait for the approval request, not for cold guard initialization.
+            # Cleanup must not race the zero-timeout path by injecting a denial.
+            assert notified.wait(30), "approval request never became ready"
             t.join(timeout=5)
-
-        assert result_holder[0]["approved"] is False
-        assert result_holder[0]["outcome"] == "timeout"
-        assert "timed out" in result_holder[0]["message"]
-        unregister_gateway_notify(session_key)
+            assert not t.is_alive(), "zero-timeout approval did not finish"
+            assert result_holder[0] is not None, "approval worker returned no result"
+            assert result_holder[0]["approved"] is False
+            assert result_holder[0]["outcome"] == "timeout"
+            assert "timed out" in result_holder[0]["message"]
+        finally:
+            if t.is_alive():
+                resolve_gateway_approval(session_key, "deny")
+                t.join(timeout=5)
+            unregister_gateway_notify(session_key)
 
     def test_parallel_subagent_approvals(self):
         """Multiple threads can block concurrently and be resolved independently."""

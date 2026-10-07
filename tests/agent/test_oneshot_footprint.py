@@ -32,7 +32,13 @@ def test_oneshot_hides_skill_manage_and_skill_authoring_coaching(oneshot, intera
     prompt = build_skills_system_prompt(available_tools={"skill_view", "skills_list"}, skills_dir_override=_skills_dir(tmp_path))
     assert "demo-skill" in prompt and "skill_view" in prompt
     assert "skill_manage" not in prompt and "offer to save as a skill" not in prompt
-    assert "skill_manage" in interactive_prompt and "offer to save as a skill" in interactive_prompt
+    assert "Read an existing owner before changing it" in interactive_prompt
+    assert "Persist a validated recurring procedure" in interactive_prompt
+    assert "no-write is a successful outcome" in interactive_prompt
+    assert "Read an existing owner before changing it" not in prompt
+    assert "Persist a validated recurring procedure" not in prompt
+    assert "no-write is a successful outcome" not in prompt
+    assert "do not create or edit" in prompt
 
 
 def _skills_dir(tmp_path):

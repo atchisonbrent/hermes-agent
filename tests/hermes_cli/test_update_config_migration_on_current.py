@@ -51,6 +51,37 @@ def _run(current: int, latest: int):
         return buf.getvalue(), migrate_calls
 
 
+def test_real_config_migration_updates_active_and_sibling_profiles(tmp_path, monkeypatch):
+    import yaml
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli import update_cmd_config
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / '.hermes'
+    sibling = home / 'profiles' / 'work'
+    sibling.mkdir(parents=True)
+    source = ('# Preserve this comment\n_config_version: 33\n'
+              'model:\n  provider: custom\n  default: fake-model\n'
+              '  base_url: http://127.0.0.1:9/v1\n'
+              'mcp_servers:\n  legacy-off:\n    command: /bin/true\n    disabled: true\n')
+    for path in (home, sibling):
+        (path / 'config.yaml').write_text(source, encoding='utf-8')
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setattr(update_cmd_config, "_LAST_SIBLING_SNAPSHOTS", {})
+    token = set_hermes_home_override(home)
+    try:
+        update_cmd._check_and_apply_config_migration(assume_yes=True)
+        for path in (home, sibling):
+            text = (path / 'config.yaml').read_text(encoding='utf-8')
+            config = yaml.safe_load(text)
+            assert config['_config_version'] == DEFAULT_CONFIG['_config_version']
+            assert config['mcp_servers']['legacy-off']['enabled'] is False
+            assert '# Preserve this comment' in text
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_migrates_when_config_behind():
     """Version bump on the repair path must be applied silently."""
     out, calls = _run(current=37, latest=38)

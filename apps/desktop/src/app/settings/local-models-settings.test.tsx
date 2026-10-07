@@ -3,7 +3,7 @@ import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import { $localRuntimeInstallStarting, $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $localRuntimeInstallStarting, $localRuntimeJobs, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
@@ -135,12 +135,26 @@ beforeEach(() => {
   $localRuntimeJobs.set([])
 })
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
-  vi.clearAllMocks()
-  // A running job arms the store's 700ms re-poll; drain it so the timer cannot
-  // fire into a torn-down test environment.
+  // Setting the atom does not cancel the poller's module-level timer. Drain
+  // the real in-flight/pending poll against an idle backend before clearing
+  // mocks, so no late response can overwrite the next test's fixture.
+  let polledIdle = false
+  mocked.getLocalModelsJobs.mockImplementation(async () => {
+    polledIdle = true
+    return { jobs: [] }
+  })
   $localRuntimeJobs.set([])
+  await act(async () => {
+    await waitFor(() => {
+      watchLocalRuntimeJobs()
+      expect(polledIdle).toBe(true)
+    })
+  })
+  expect($localRuntimeJobs.get()).toEqual([])
+  $localRuntimeInstallStarting.set(false)
+  vi.clearAllMocks()
 })
 
 describe('LocalModelsSettings', () => {
@@ -333,7 +347,7 @@ describe('LocalModelsSettings', () => {
     })
     // A running job already in the app-level store — as after closing and
     // reopening the pane mid-download.
-    $localRuntimeJobs.set([
+    const jobs: LocalRuntimeJob[] = [
       {
         job_id: 'j9',
         kind: 'model-download',
@@ -347,7 +361,9 @@ describe('LocalModelsSettings', () => {
         percent: 62,
         error: null
       }
-    ])
+    ]
+    mocked.getLocalModelsJobs.mockResolvedValue({ jobs })
+    $localRuntimeJobs.set(jobs)
 
     await renderFullPane()
     await screen.findByText('Qwen3.6 27B')
@@ -366,7 +382,7 @@ describe('LocalModelsSettings', () => {
       runtime_installed: true,
       runtime_backend: 'cuda'
     })
-    $localRuntimeJobs.set([
+    const jobs: LocalRuntimeJob[] = [
       {
         job_id: 'j2',
         kind: 'model-download',
@@ -379,7 +395,9 @@ describe('LocalModelsSettings', () => {
         done_bytes: 100,
         error: 'Downloaded file failed its integrity check and was removed — try again'
       }
-    ])
+    ]
+    mocked.getLocalModelsJobs.mockResolvedValue({ jobs })
+    $localRuntimeJobs.set(jobs)
 
     await renderFullPane()
     await screen.findByText('Qwen3.6 27B')
@@ -412,7 +430,7 @@ describe('quickstart', () => {
   })
 
   it('pins the quickstart progress view while the job runs', async () => {
-    $localRuntimeJobs.set([
+    const jobs: LocalRuntimeJob[] = [
       {
         job_id: 'q1',
         kind: 'quickstart',
@@ -426,10 +444,19 @@ describe('quickstart', () => {
         percent: 30,
         error: null
       }
-    ])
+    ]
+    mocked.getLocalModelsJobs.mockResolvedValue({ jobs })
+    $localRuntimeJobs.set(jobs)
     renderPane()
 
     expect(await screen.findByText('Qwen3.6 27B — 17.6 GB')).toBeTruthy()
+    // Exercise the authoritative refresh rather than racing the poll timer.
+    await act(async () => {
+      watchLocalRuntimeJobs()
+      await waitFor(() => expect(mocked.getLocalModelsJobs).toHaveBeenCalled())
+      await mocked.getLocalModelsJobs.mock.results.at(-1)?.value
+    })
+    expect(screen.getByText('Qwen3.6 27B — 17.6 GB')).toBeTruthy()
     // One job, one view: no setup or model-choice buttons while it runs.
     expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
   })
@@ -608,7 +635,9 @@ describe('quickstart completion navigation', () => {
 
     // A finished quickstart already in history when the pane mounts —
     // must NOT trigger navigation.
-    $localRuntimeJobs.set([doneJob])
+    let jobs: LocalRuntimeJob[] = [doneJob]
+    mocked.getLocalModelsJobs.mockImplementation(async () => ({ jobs }))
+    $localRuntimeJobs.set(jobs)
 
     render(
       <MemoryRouter initialEntries={['/settings']}>
@@ -624,10 +653,12 @@ describe('quickstart completion navigation', () => {
     // A quickstart the pane SAW running that then completes -> navigate.
     const running: LocalRuntimeJob = { ...doneJob, job_id: 'live-run', phase: 'downloading', status: 'running' }
     await act(async () => {
-      $localRuntimeJobs.set([doneJob, running])
+      jobs = [doneJob, running]
+      $localRuntimeJobs.set(jobs)
     })
     await act(async () => {
-      $localRuntimeJobs.set([doneJob, { ...running, phase: 'done', status: 'done' }])
+      jobs = [doneJob, { ...running, phase: 'done', status: 'done' }]
+      $localRuntimeJobs.set(jobs)
     })
     expect(routeProbe).toHaveBeenCalledWith('/')
   })

@@ -48,9 +48,9 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
     def transcript() -> str:
         return tmux("capture-pane", "-p", "-J", "-t", "p", "-S", "-", "-E", "-")
 
-    def wait_for(needle: str, timeout: float = 60.0) -> None:
+    def wait_for(needle: str, timeout: float = 60.0, *, pattern: bool = False) -> None:
         end = time.monotonic() + timeout
-        while needle not in transcript():
+        while not (re.search(needle, transcript()) if pattern else needle in transcript()):
             assert time.monotonic() < end, f"{needle!r} never appeared:\n{transcript()[-3000:]}"
             time.sleep(0.1)
 
@@ -78,7 +78,9 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
         try:
             tmux("set", "-g", "window-size", "manual")
             wait_for("Welcome to Hermes", timeout=120)
-            time.sleep(2.0)
+            # The banner precedes command-scanner/tool initialization. Input
+            # sent before the prompt mounts can be echoed but never submitted.
+            wait_for(r"(?m)^[ \t]*❯", timeout=120, pattern=True)
 
             ask(1)
             reply_done(1)
