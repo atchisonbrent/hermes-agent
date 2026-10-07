@@ -1288,6 +1288,12 @@ class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
+        import psutil
+
+        def unavailable(pid):
+            raise psutil.NoSuchProcess(pid)
+
+        monkeypatch.setattr(psutil, "Process", unavailable)
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
         monkeypatch.setattr(
             status.subprocess, "run",
