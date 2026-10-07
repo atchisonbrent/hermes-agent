@@ -131,7 +131,34 @@ kanban_complete(
 )
 ```
 
-Include the exact checks that passed and any bounded caveat that does not block acceptance.
+When approval relies on executed checks, record your own compact verification
+receipt in the existing `reviewer_checks` metadata. Reuse the handoff's evidence
+locations, but independently verify its claims; a missing implementer receipt is
+not itself a defect. No new payload schema or runtime gate is required.
+
+- Map each acceptance criterion to its check or inspected artifact. Use the
+  project's required gates and relevant regression coverage; state exclusions.
+- Identify the tested commit and clean/dirty state. For dirty or non-Git work,
+  also identify relevant content with a retained patch/snapshot or file hashes,
+  including relevant untracked inputs. A dirty flag alone is not an identity.
+- Record the command, working directory, safe runtime/dependency identifiers,
+  and decisive output (exit status, executed counts, named failures). Never dump
+  environment variables or credentials. Capture the tested command's own status,
+  not a downstream formatter's. Zero executed tests is not test verification,
+  even when the command exits zero; distinguish build/lint checks from tests.
+- Label each result `pass`, `fail`, `not run`, or `inconclusive`; name the reason
+  for missing evidence. Link retained logs/artifacts and include decisive lines
+  in the task record so an expired scratch path cannot erase the verdict.
+- Recheck candidate identity before approval. Changed relevant content requires
+  fresh verification; do not transfer an old green to new code. Execute checks
+  in isolation where needed; do not use snapshot-update or auto-fix flags to
+  alter the deliverable while reviewing it.
+
+A required criterion marked `not run` or `inconclusive` is not satisfied. Request
+changes for implementer-correctable gaps; escalate external prerequisites through
+the existing verdicts below. Optional checks may remain unrun with an explicit
+limitation. Artifact-only reviews need criterion-to-evidence mapping, not invented
+commands or test counts. A receipt records evidence, not proof of future behavior.
 
 #### Request changes
 

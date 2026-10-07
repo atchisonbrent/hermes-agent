@@ -54,6 +54,7 @@ knew:
 - Research, comparisons, news summaries, "what is the current state of X"
 - Any deliverable you write to disk that quotes, paraphrases, or reports
   outside facts — reports, briefs, docs, decks, wiki pages
+- Consequential claims in public READMEs, release notes, or benchmark reports
 - Fact-finding where the user will want to check your work
 - Multi-source synthesis where conflicting sources must be attributed
 
@@ -216,8 +217,8 @@ python "$S" render --style evidence --replace-in report.md
 
 `--evidence` fails the draft if any cited source has no attached quote. The
 `evidence` render style prints each source's quotes beneath its URL, so the
-deliverable shows claim → source → exact supporting text with nothing taken on
-faith. Use `--replace-in <draft>` to rewrite an existing Sources block in place
+deliverable shows claim → source → attached text for inspection. The reader still
+needs to assess source provenance and whether that text supports the claim. Use `--replace-in <draft>` to rewrite an existing Sources block in place
 (idempotent — safe to re-run after attaching more quotes); `--cited-in` prints
 to stdout instead. Both emit the heading `## Sources` (`--style plain` emits
 `Sources:`).
@@ -229,6 +230,24 @@ table rows (`|`), and fenced code are dropped; blockquote markers are stripped.
 Provenance is declared by either a `[n]` citation or an `[unverified]` marker,
 so a sentence carrying both counts once. Run `verify` without a threshold first
 and read the `info: stats:` line to see the counts before picking a number.
+
+## Public release and benchmark claims
+
+For consequential public claims, keep a short claim-to-evidence table in the
+existing draft, report, or review record; do not require a separate `FACTS.md`.
+Record the claim, precise source locator or reproduction command, checked
+revision/date, and material bounds (metric, sample, environment, exclusions).
+Keep line/section locators in the table: the URL ledger strips fragments, so it
+cannot preserve a `#section` or line-range locator by itself. Commands belong in
+the table, not in URL fields.
+
+Re-run reproducible measurements on the named revision before publishing a new
+claim; historical results retain their original revision and date. Verify that
+cited text actually supports the claim, including universals such as "all" or
+"never". Remove unsupported promotional or quantitative claims, or plainly say
+what was not measured; hedging and `[unverified]` are not publication evidence.
+Explicit uncertainty labels remain useful in analysis reports. Draft verification
+does not authorize publication or disclosure of private evidence.
 
 ## Pitfalls
 
@@ -271,4 +290,6 @@ Green means: every `[n]` in the draft exists in the ledger, the Sources block
 lists exactly the cited ids with the ledger's URLs, and the cited share of
 source-bearing sentences meets the threshold. Read the warnings even when the
 exit code is 0 — uncited registered sources usually mean a claim lost its
-attribution during editing.
+attribution during editing. These are mechanical checks, not verification of
+source authenticity, claim entailment, or factual truth; `[unverified]` contributes
+to declared-provenance coverage, never to evidential support.

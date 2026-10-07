@@ -53,6 +53,11 @@ The feedback loop is the debugging work. Before reading code to build a theory, 
 
 When a clean repro is hard, spend disproportionate effort building the loop. Guessing without a red-capable loop is the failure mode this skill exists to prevent.
 
+For a new detector or validator, exercise a known-good case it should accept and
+a known-bad case it should reject. Derive those expectations independently of the
+implementation. If a control is unavailable, disclose the untested direction;
+a detector flagging every input calls for a control, not a guessed verdict.
+
 ## When to Use
 
 Use for ANY technical issue:
@@ -137,6 +142,12 @@ for i in {1..100}; do pytest tests/test_flake.py::test_name -q || break; done
 ```
 
 ### 3. Check Recent Changes
+
+Before attributing a failing check to the candidate or calling it pre-existing,
+load `references/failure-attribution.md`. Compare explicit candidate and baseline
+identities in isolated workspaces; the same failure on the baseline does not
+establish candidate innocence. This is an attribution check, not a prerequisite
+for every debugging task.
 
 - What changed that could cause this?
 - Git diff, recent commits
@@ -302,13 +313,12 @@ If the user is present, show the ranked list before testing. They may have domai
 
 ### 3. Verify Fix
 
-```bash
-# Run the specific regression test
-pytest tests/test_module.py::test_regression -v
-
-# Run full suite — no regressions
-pytest tests/ -q
-```
+Use `terminal` with the repository's supported test runner to re-run the specific
+regression, required project gates, and regression coverage relevant to the
+change. Run the full suite when required or justified by the affected surface;
+do not substitute a focused pass for a required gate. Record the actual command,
+candidate identity, exit status and executed counts, and state what was not run.
+An empty collection or skipped verification does not establish the fix.
 
 ### 4. If Fix Doesn't Work — The Rule of Three
 
@@ -375,7 +385,7 @@ If you catch yourself thinking:
 | **1. Root Cause** | Read errors, reproduce, check changes, gather evidence, trace data flow | Understand WHAT and WHY |
 | **2. Pattern** | Find working examples, compare, identify differences | Know what's different |
 | **3. Hypothesis** | Form theory, test minimally, one variable at a time | Confirmed or new hypothesis |
-| **4. Implementation** | Create regression test, fix root cause, verify | Bug resolved, all tests pass |
+| **4. Implementation** | Create regression test, fix root cause, verify | Reported behavior verified, required gates pass, coverage limits stated |
 
 ## Hermes Agent Integration
 
@@ -418,12 +428,7 @@ When fixing bugs:
 3. Fix the root cause (GREEN)
 4. The test proves the fix and prevents regression
 
-## Real-World Impact
+## Verification limits
 
-From debugging sessions:
-- Systematic approach: 15-30 minutes to fix
-- Random fixes approach: 2-3 hours of thrashing
-- First-time fix rate: 95% vs 40%
-- New bugs introduced: Near zero vs common
-
-**No shortcuts. No guessing. Systematic always wins.**
+A passing reproduction establishes the exercised behavior, not a universal claim
+about debugging speed, success rates, or the absence of other defects.
