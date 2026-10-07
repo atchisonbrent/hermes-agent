@@ -376,14 +376,31 @@ def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.Fixtur
                 assert "result" in reply, f"leg {i} switch {leg.value!r} refused: {reply}"
             pool_state["fail"] = leg.host == "pool" and not leg.ok
             done = gw.turn(sid, f"turn {i}")
+            allowed = {*fleet.keys[leg.host], *(("", "no-key-required") if leg.keyless else ())}
+            title = None
             if i == 0:
-                gw.seen_or_wait(gw.event("session.title", sid), timeout=120)  # first-turn aux call settles
+                # The instant derived title is not completion of the deferred
+                # auxiliary request. Settle the fake host's actual reply before
+                # taking the next leg's request markers.
+                title_event = gw.event("session.title", sid)
+                generated_titles = {f"aux-from-{host}" for host in ROLES}
+                try:
+                    title = gw.seen_or_wait(
+                        lambda m: title_event(m) and (m["params"].get("payload") or {}).get("title") in generated_titles,
+                        timeout=120,
+                    )
+                except AssertionError:
+                    log = fleet.since(marks)
+                    assert_routing(check_routing(fleet, log, {leg.host: allowed}, {leg.host: 1}), describe(log))
+                    raise
             log = fleet.since(marks)
             payload = (done.get("params") or {}).get("payload") or {}
             ctx = f"leg {i} ({leg.value!r} -> {leg.host}): {done.get('params', {}).get('type')} {str(payload)[:300]}\n{describe(log)}"
             print(ctx)
-            allowed = {*fleet.keys[leg.host], *(("", "no-key-required") if leg.keyless else ())}
             assert_routing(check_routing(fleet, log, {leg.host: allowed}, {leg.host: 1}), ctx)
+            if i == 0:
+                assert title is not None
+                assert title["params"]["payload"]["title"] == f"aux-from-{leg.host}", ctx
             if leg.ok:
                 assert payload.get("text") == f"answer-from-{leg.host}", ctx
     finally:

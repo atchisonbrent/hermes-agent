@@ -26,7 +26,16 @@ reproducing against current upstream.
 - Use actual input/approval readiness and the compute supervisor's cold-start
   budget rather than racing startup and cleanup.
 - Make desktop polling fixtures agree with the backend registry, drain the
-  poller between tests, and intercept Storage writes at their actual prototype.
+  poller between tests, and intercept writes at the object that owns `setItem`.
+- Bound the profile-local MCP fixture with a 15-second discovery override and
+  a 30-second response deadline (previously 10 seconds). A deliberately slow
+  probe verifies the override; production discovery defaults are unchanged.
+- Add the commit author's existing public email to the fork contributor map.
+- Wait for mounted rows before TUI unmount tests. Check the existing geometry
+  assertions at convergence and again after the original 40ms observation window;
+  this is not a claim of renderer quiescence.
+- Wait for the model-generated session title, not the instant placeholder,
+  before marking the next routing-test leg; retain every host/key assertion.
 - Pass the documented state-DB test exemption only to throwaway upgrade-install
   children. Retain the parent sandbox/CI prerequisite and production guard.
   Assert seeded sessions before copying state. Permit SQLite recovery when
@@ -55,8 +64,10 @@ Use `scripts/run_tests.sh` for the changed Python test files, including
 `tests/scripts/test_run_tests_shell_env.py`, and the complete
 `tests/e2e/core/upgrade/test_upgrade_path.py` in disposable Linux isolation.
 The latter runs real clean, autostash, interrupted and offline upgrades against
-local Git origins and a fake model provider. Run the desktop Vitest suite and
-Windows-footgun lint. Publication requires both independent reviewers and a
+local Git origins and a fake model provider. Run the routing matrix in
+`tests/e2e/core/tenancy/test_routing_truth_table.py` through the same runner.
+Run the desktop Vitest suite and `npm --prefix ui-tui run check` on CI's Node
+major, plus Windows-footgun lint. Publication requires both independent reviewers and a
 fresh exact-head CI result; local passes do not certify remote CI.
 
 Regression evidence includes ASCII-locale receipt/config failures, malformed
@@ -78,5 +89,5 @@ Rebase surfaces: the fork review component, skill guidance, test fixtures,
 `scripts/run_tests.sh`, and `.github/workflows/tests.yml`. Update hazard: future
 release naming or runner isolation changes can invalidate the explicit baseline.
 Reclassification trigger: equivalent upstream fixes or retirement of the local
-policy components. Rollback: revert this reviewed recovery commit in a separately
+policy components. Rollback: revert the reviewed recovery changes in a separately
 verified change; no data migration or user configuration rewrite is introduced.

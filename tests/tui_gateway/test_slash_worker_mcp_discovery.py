@@ -34,8 +34,10 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
     server.write_text(
         textwrap.dedent(
             f"""
+            import time
             from mcp.server import MCPServer
 
+            time.sleep(3)  # Prove the profile's longer discovery budget is honored.
             mcp = MCPServer("profileprobe")
 
             @mcp.tool()
@@ -51,6 +53,10 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
     (profile_home / "config.yaml").write_text(
         yaml.safe_dump(
             {
+                # This test covers profile-local discovery, not the interactive
+                # startup latency budget. Allow the deliberately slow probe to
+                # finish before the worker snapshots its tools.
+                "mcp_discovery_timeout": 15,
                 "mcp_servers": {
                     "profileprobe": {
                         "enabled": True,
@@ -99,9 +105,9 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
         proc.stdin.write(json.dumps({"id": 1, "command": "/tools"}) + "\n")
         proc.stdin.flush()
         try:
-            line = output.get(timeout=10)
+            line = output.get(timeout=30)
         except queue.Empty:
-            pytest.fail("slash worker produced no /tools response within 10 seconds")
+            pytest.fail("slash worker produced no /tools response within 30 seconds")
         response = json.loads(line)
         assert response["ok"] is True
         assert "mcp__profileprobe__hermes_61922_profile_probe" in response["output"]

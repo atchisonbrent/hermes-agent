@@ -449,19 +449,25 @@ describe('useVirtualHistory offset cache reuse', () => {
       const scroll = expose.current!.scroll!
 
       scroll.scrollTo(0)
-      await delay(20)
+      // The row must actually mount before we exercise its unmount measurement.
+      await vi.waitFor(() => expect(expose.current!.virtualHistory.start).toBe(0), { timeout: 2000 })
       scroll.scrollTo(5)
       const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
 
       instance.rerender(React.createElement(Harness, { columns: 80, expose, initialHeights, items }))
-      await delay(40)
+      const assertMeasurement = () => {
+        expect(adjustScrollTop).not.toHaveBeenCalled()
+        expect(scroll.getScrollTop()).toBe(5)
+        expect(scroll.isSticky()).toBe(false)
+        expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
+        expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
+        expect(expose.current!.virtualHistory.offsets[items.length]).toBe(40)
+      }
 
-      expect(adjustScrollTop).not.toHaveBeenCalled()
-      expect(scroll.getScrollTop()).toBe(5)
-      expect(scroll.isSticky()).toBe(false)
-      expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
-      expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
-      expect(expose.current!.virtualHistory.offsets[items.length]).toBe(40)
+      await vi.waitFor(assertMeasurement, { timeout: 2000 })
+      // Retain the original observation window after convergence.
+      await delay(40)
+      assertMeasurement()
     } finally {
       instance.unmount()
       instance.cleanup()
@@ -532,21 +538,27 @@ describe('useVirtualHistory offset cache reuse', () => {
       const scroll = expose.current!.scroll!
 
       scroll.scrollTo(0)
-      await delay(20)
+      // The row must actually mount before we exercise its unmount measurement.
+      await vi.waitFor(() => expect(expose.current!.virtualHistory.start).toBe(0), { timeout: 2000 })
       scroll.scrollTo(5)
       const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
       const staleHeights = new Map(initialHeights)
 
       staleHeights.set(items[0]!.key, 1)
       instance.rerender(React.createElement(Harness, { expose, initialHeights: staleHeights, items }))
-      await delay(40)
+      const assertMeasurement = () => {
+        expect(adjustScrollTop).toHaveBeenCalledOnce()
+        expect(adjustScrollTop).toHaveBeenCalledWith(1)
+        expect(scroll.getScrollTop()).toBe(6)
+        expect(scroll.isSticky()).toBe(false)
+        expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
+        expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
+      }
 
-      expect(adjustScrollTop).toHaveBeenCalledOnce()
-      expect(adjustScrollTop).toHaveBeenCalledWith(1)
-      expect(scroll.getScrollTop()).toBe(6)
-      expect(scroll.isSticky()).toBe(false)
-      expect(expose.current!.virtualHistory.start).toBeGreaterThan(0)
-      expect(expose.current!.virtualHistory.offsets[1]).toBe(2)
+      await vi.waitFor(assertMeasurement, { timeout: 2000 })
+      // Retain the original observation window after convergence.
+      await delay(40)
+      assertMeasurement()
     } finally {
       instance.unmount()
       instance.cleanup()
