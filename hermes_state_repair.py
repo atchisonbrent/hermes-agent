@@ -556,6 +556,18 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
     for p, is_dir in [(db_path.parent, True), *((p, False) for p in (db_path, *sidecars) if p.is_file())]:
         if (is_dir and not p.is_dir()) or os.access(p, os.R_OK | os.W_OK):
             continue
+        # Quarantine or SQLite sidecar cleanup may remove a listed file before
+        # access(). Only confirmed absence is benign; permission errors are not.
+        if not is_dir:
+            try:
+                p.stat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pass  # Preserve the actionable error below for unknown state.
+            else:
+                if os.access(p, os.R_OK | os.W_OK):
+                    continue  # A concurrent startup recreated a writable file.
         x = "x" if is_dir else ""
         in_scope = False
         with contextlib.suppress(OSError, ValueError):
@@ -565,6 +577,13 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
         if in_scope and os.access(p, os.R_OK | os.W_OK):
             logger.info("%s preflight: repaired read-only %s (chmod u+rw%s)", db_label, p, x)
             continue
+        if not is_dir:
+            try:
+                p.stat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pass
         wal_note = (" Do NOT delete the -wal file — it contains committed data that "
                     "will be merged into the database once it is writable." if p.name.endswith("-wal") else "")
         raise sqlite3.OperationalError(

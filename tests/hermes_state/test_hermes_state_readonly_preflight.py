@@ -143,6 +143,31 @@ class TestRefusalOutsideScope:
 
 
 class TestSkips:
+    @pytest.mark.parametrize("suffix", ["", "-wal", "-shm"])
+    @pytest.mark.parametrize("inside,recreate", [(True, False), (False, False), (False, True)])
+    def test_file_removed_between_listing_and_access(self, hermes_home, tmp_path, monkeypatch, suffix, inside, recreate):
+        db = (hermes_home if inside else tmp_path) / "state.db"
+        _make_db(db)
+        target = db.with_name(db.name + suffix)
+        if suffix:
+            target.write_bytes(b"sidecar fixture")
+        original_access = os.access
+        removed = False
+
+        def access(path, mode):
+            nonlocal removed
+            if Path(path) == target and not removed:
+                target.rename(target.with_name(target.name + ".retained"))
+                removed = True
+                if recreate:
+                    target.write_bytes(b"replacement")
+                return False
+            return original_access(path, mode)
+
+        monkeypatch.setattr(os, "access", access)
+        preflight_db_writability(db)
+        assert removed
+        assert target.with_name(target.name + ".retained").is_file()
 
 
 
