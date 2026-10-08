@@ -74,7 +74,7 @@ def serialized_write(fn):
 
 
 class _ReviewRefusal(ValueError):
-    """A fixed, public-safe refusal reason; never include configuration values."""
+    """A fixed, public-safe refusal reason; only numeric capacity settings may be included."""
 
 
 def review_config():
@@ -102,17 +102,24 @@ def review_config():
     # The auxiliary resolver strips Hermes's virtual -900k context-window
     # suffix. Approval requires a concrete wire model, not that virtual alias.
     if (not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", model)
-            or model.endswith("-900k")):
+            or model.lower().endswith("-900k")):
         raise _ReviewRefusal("Invalid durable_write_review.model: concrete reviewer model required")
     if cfg.get("provider", "openai-codex") != "openai-codex":
         raise _ReviewRefusal("Invalid durable_write_review.provider: requires openai-codex OAuth")
+    from tools.durable_review_capacity import MAX_PACKET_BYTES, model_capacity
     limit = cfg.get("max_input_bytes", 65536)
-    if type(limit) is not int or not 1024 <= limit <= 131072:
-        raise _ReviewRefusal("Invalid durable_write_review.max_input_bytes: expected integer 1024..131072")
-    return {"model": model, "provider": "openai-codex", "max_input_bytes": limit}
+    if limit == "auto":
+        limit = MAX_PACKET_BYTES
+    if type(limit) is not int or not 1024 <= limit <= MAX_PACKET_BYTES:
+        raise _ReviewRefusal("Invalid durable_write_review.max_input_bytes: expected auto or integer 1024..16777216")
+    capacity = model_capacity(model)
+    if capacity is None:
+        raise _ReviewRefusal("durable_write_review.model context unavailable in the exact Codex-route catalog")
+    return {"model": model, "provider": "openai-codex", "max_input_bytes": limit, **capacity}
 
 
 _evidence = contextvars.ContextVar("durable_write_evidence", default=None)
+_raw_evidence = contextvars.ContextVar("durable_write_raw_evidence", default=None)
 _review_origin: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("durable_write_origin", default=None)
 
 
@@ -153,6 +160,13 @@ def review_evidence(messages, *, machine_authored=False):
     source = []
     omitted_nontext = 0
     try:
+        try:
+            config = review_config()
+        except Exception:
+            # The staging boundary reports malformed config; evidence capture
+            # must not crash dispatch before that fail-closed result is returned.
+            config = {"max_input_bytes": 0}
+        limit = config["max_input_bytes"] if config else 65536
         from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
         from agent.conversation_compression import _is_real_user_message
         start = max(i for i, m in enumerate(messages) if _is_real_user_message(m))
@@ -193,9 +207,10 @@ def review_evidence(messages, *, machine_authored=False):
                 raise ValueError("Non-text source")
             source.append({"id": f"source:{len(source)}", "role": m["role"], "text": content, **provenance})
         required = [s for s in source if s["role"] == "user"]
-        if len(_encoded(required).encode()) > 16000:
+        if len(_encoded(required).encode()) > limit:
             raise ValueError("Oversize user source")
         selected = list(required)
+        selected_bytes = len(_encoded(selected).encode())
         # A follow-up may authorize a preference stated in an earlier turn.
         # Keep a contiguous suffix of whole human messages, newest first;
         # never skip a newer correction to make room for an older statement.
@@ -211,14 +226,16 @@ def review_evidence(messages, *, machine_authored=False):
                 item = {"id": f"source:{-index - 1}", "role": "user", "text": content}
                 if omitted_parts:
                     item["omitted_nontext_parts"] = omitted_parts
-                if not isinstance(content, str) or len(_encoded(selected + [item]).encode()) > 15000:
+                if not isinstance(content, str) or selected_bytes + len(_encoded(item).encode()) + 2 > limit:
                     omitted_users = len(earlier) - index
                     break
                 selected.append(item)
+                selected_bytes += len(_encoded(item).encode()) + 2
         omitted = omitted_nontext
         for item in reversed([s for s in source if s["role"] == "tool"]):
-            if len(_encoded(selected + [item]).encode()) <= 16000:
+            if selected_bytes + len(_encoded(item).encode()) + 2 <= limit:
                 selected.append(item)
+                selected_bytes += len(_encoded(item).encode()) + 2
             else:
                 omitted += 1
         source = sorted(selected, key=lambda s: int(s["id"].split(":")[1]))
@@ -233,6 +250,16 @@ def review_evidence(messages, *, machine_authored=False):
         yield
     finally:
         _evidence.reset(token)
+
+
+def current_review_evidence():
+    """Materialize source only when a durable writer actually needs it."""
+    raw = _raw_evidence.get()
+    if raw is None:
+        return _evidence.get()
+    messages, machine = raw
+    with review_evidence(messages, machine_authored=machine):
+        return _evidence.get()
 
 
 def capture_review_evidence(fn):
@@ -252,8 +279,11 @@ def capture_review_evidence(fn):
                   "platform": str(getattr(agent, "platform", "") or "")}
         token = _review_origin.set(origin)
         try:
-            with review_evidence(messages, machine_authored=machine):
+            raw_token = _raw_evidence.set((messages, machine))
+            try:
                 return fn(*args, **kwargs)
+            finally:
+                _raw_evidence.reset(raw_token)
         finally:
             _review_origin.reset(token)
     return wrapped
@@ -365,7 +395,7 @@ def _stage_write(subsystem, payload, *, summary, origin, require_manual=False):
     try:
         auto_config = review_config()
         if auto_config:
-            context = _review_context(subsystem, payload, _evidence.get(), auto_config)
+            context = _review_context(subsystem, payload, current_review_evidence(), auto_config)
             record["review"] = {"state": "ready", "context": context, "config": auto_config}
     except _ReviewRefusal as exc:
         record["review"] = {"state": "defer", "reason": str(exc)}
@@ -622,7 +652,11 @@ Source is a bounded window of whole messages. The context-level omitted_source_r
 other results were excluded for size or non-text modality, not that they support
 the proposal. Source-level omitted_nontext_parts counts omitted human image/audio
 parts. Only supplied text is evidence; never infer attachment contents.
-Source-level omitted_user_messages counts excluded earlier human messages. Earlier
+Generated caches in unreviewed_generated_caches are hash-versioned but NOT reviewed
+or proven equivalent to source. The reviewer does not execute them; Python might.
+Defer if their unreviewed contents are necessary to assess the proposal.
+The capacity object reports approximate budgeting, not evidence.
+Context-level omitted_earlier_user_messages counts excluded earlier human messages. Earlier
 human messages are verbatim antecedents, not authorization to ignore later
 corrections. Synthetic recovery and compression messages are excluded. Never
 infer success, completeness, or lack of contradictory evidence from omissions.
@@ -639,7 +673,7 @@ def _encoded(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _review_context(subsystem, payload, source, config, *, omitted_source_results=0):
+def _review_context(subsystem, payload, source, config, *, omitted_source_results=0, omitted_earlier_user_messages=0):
     """Small complete snapshot; read only the stores/owners the proposal targets."""
     from tools.memory_tool import MemoryStore, fcntl, msvcrt
     from agent.redact import redact_sensitive_text
@@ -650,9 +684,13 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
     limit = config["max_input_bytes"]
     source = [dict(item) for item in source]
     omitted = omitted_source_results + sum(item.pop("omitted_tool_results", 0) for item in source)
+    prior_user_omissions = omitted_earlier_user_messages + sum(item.pop("omitted_user_messages", 0) for item in source)
     context = {"subsystem": subsystem, "payload": payload, "source": source,
                "omitted_source_results": omitted, "files": {}}
-    size = len(_encoded(context).encode()) + len(_REVIEW_POLICY.encode())
+    # Optional source is selected after complete owner files are captured.
+    size = len(_encoded({**context, "source": []}).encode()) + len(_REVIEW_POLICY.encode())
+    owner_budget = min(limit, config["max_input_tokens"] * 3)
+    cache_bytes = 0
 
     def capture(label, path):
         nonlocal size
@@ -670,11 +708,14 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
         try:
             with path.open("rb") as stream:
                 stat = os.fstat(stream.fileno())
-                data = stream.read(limit + 1)
+                data = stream.read(owner_budget + 1)
             size += len(data)
-            if size > limit:
-                raise _ReviewRefusal("Oversize context")
-            text = data.decode("utf-8")
+            if size > owner_budget:
+                raise _ReviewRefusal(f"Review owner bytes exceed effective budget: at least {size} > {owner_budget}; split independent owners")
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                raise _ReviewRefusal("Non-UTF8 owner file is not a verified generated cache") from None
             version = [stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size,
                        hashlib.sha256(data).hexdigest()]
         except FileNotFoundError:
@@ -689,6 +730,7 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
     cfg_data = cfg_path.read_bytes() if cfg_path.exists() else b""
     context["config_version"] = hashlib.sha256(cfg_data).hexdigest()
     if subsystem == SKILLS:
+        from tools.durable_review_capacity import verified_bytecode_cache
         from tools.skill_manager_tool import _find_skill, _resolve_skill_dir, _validate_name
         ops = payload.get("operations") or [payload]
         owners = {}
@@ -714,8 +756,24 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
                         path = Path(directory) / filename
                         if path == root / "SKILL.md":
                             continue
-                        if len(context["files"]) >= 128:
-                            raise _ReviewRefusal("Too many owner files")
+                        if path.is_symlink():
+                            raise _ReviewRefusal("Symlink owner")
+                        if len(context["files"]) + len(context.get("unreviewed_generated_caches", {})) >= 4096:
+                            raise _ReviewRefusal("Owner file safety ceiling exceeded (4096)")
+                        if verified_bytecode_cache(path, root):
+                            # Metadata does not prove that bytecode matches source.
+                            # Declare and version it; never transmit or execute it.
+                            with path.open("rb") as stream:
+                                data = stream.read(limit + 1)
+                            cache_bytes += len(data)
+                            if cache_bytes > limit:
+                                raise _ReviewRefusal("Generated cache safety ceiling exceeded")
+                            caches = context.setdefault("unreviewed_generated_caches", {})
+                            caches[f"{name}/{path.relative_to(root).as_posix()}"] = {
+                                "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                            if len(caches) + len(context["files"]) >= 4096:
+                                raise _ReviewRefusal("Owner file safety ceiling exceeded (4096)")
+                            continue
                         capture(f"{name}/{path.relative_to(root).as_posix()}", path)
         context["owners"] = owners
         # Required originals must exist, or have been supplied by an earlier
@@ -732,6 +790,8 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
             if action in {"create", "edit"} or (action == "patch" and op.get("content")):
                 file_path = "SKILL.md"
             target = root / file_path
+            if "__pycache__" in [part.casefold() for part in Path(file_path).parts] or target.suffix.casefold() in {".pyc", ".pyo"}:
+                raise _ReviewRefusal("Generated cache cannot be a durable-write target")
             error = validate_within_dir(target, root)
             if error:
                 raise _ReviewRefusal("Invalid affected file")
@@ -744,9 +804,57 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
                 available.discard(label)
             else:
                 available.add(label)
+    from tools.durable_review_capacity import packet_tokens
+    # Reserve framing/diagnostic space and keep the latest human turn whole.
+    # Older user corrections remain a contiguous suffix; tools are newest-first.
+    required = [s for s in source if s["role"] == "user" and int(s["id"].split(":")[1]) >= 0]
+    optional_users = sorted([s for s in source if s["role"] == "user" and s not in required],
+                            key=lambda s: int(s["id"].split(":")[1]), reverse=True)
+    optional_tools = list(reversed([s for s in source if s["role"] == "tool"]))
+    context["source"] = required
+    # Counter digits must not change selection on the apply-time rebuild.
+    # Their actual serialized size is covered by the fixed reserve below.
+    base_bytes = len(_encoded({**context, "omitted_source_results": 0}).encode()) + len(_REVIEW_POLICY.encode())
+    # packet_tokens uses ceil(UTF-8 bytes/3) plus 32 framing tokens.
+    budget = min(limit, max(0, (config["max_input_tokens"] - 32) * 3)) - 1024
+    used = base_bytes
+    selected = list(required)
+    omitted_users = 0
+    for index, item in enumerate(optional_users):
+        cost = len(_encoded(item).encode()) + 2
+        if used + cost > budget:
+            omitted_users = len(optional_users) - index
+            break
+        selected.append(item)
+        used += cost
+    for item in optional_tools:
+        cost = len(_encoded(item).encode()) + 2
+        if used + cost > budget:
+            context["omitted_source_results"] += 1
+        else:
+            selected.append(item)
+            used += cost
+    context["source"] = sorted(selected, key=lambda s: int(s["id"].split(":")[1]))
+    if omitted_users + prior_user_omissions:
+        context["omitted_earlier_user_messages"] = omitted_users + prior_user_omissions
     raw = _encoded(context)
-    if len(raw.encode()) + len(_REVIEW_POLICY.encode()) > limit:
-        raise _ReviewRefusal("Oversize context")
+    context["capacity"] = {
+        "input_tokens_estimate": packet_tokens(_REVIEW_POLICY, raw),
+        "max_input_tokens": config["max_input_tokens"],
+        "context_tokens": config["context_tokens"],
+        "max_input_bytes": limit,
+        "context_source": config["context_source"],
+    }
+    raw = _encoded(context)
+    # Account for the diagnostic itself, with enough fixed slack for its digits.
+    context["capacity"]["input_tokens_estimate"] = packet_tokens(_REVIEW_POLICY, raw) + 32
+    raw = _encoded(context)
+    size = len(raw.encode()) + len(_REVIEW_POLICY.encode())
+    if size > limit:
+        raise _ReviewRefusal(f"Review bytes exceed budget: {size} > {limit}; split independent owners or raise max_input_bytes")
+    tokens = context["capacity"]["input_tokens_estimate"]
+    if tokens > config["max_input_tokens"]:
+        raise _ReviewRefusal(f"Review estimated tokens exceed model input budget: {tokens} > {config['max_input_tokens']}; supply a smaller complete proposal")
     # Do not review a redacted approximation of the exact payload/context.
     # Secret-bearing proposals stay pending locally without any model call.
     def check_strings(value):
@@ -913,8 +1021,11 @@ def _process_review(subsystem, pending_id, home):
             if state == "accept":
                 application_started = False
                 try:
-                    fresh = _review_context(subsystem, record["payload"], context["source"], config,
-                                            omitted_source_results=context["omitted_source_results"])
+                    fresh = _review_context(
+                        subsystem, record["payload"], context["source"], config,
+                        omitted_source_results=context.get("omitted_source_results", 0),
+                        omitted_earlier_user_messages=context.get("omitted_earlier_user_messages", 0),
+                    )
                     if fresh != context or review_config() != config:
                         raise ValueError("Stale proposal")
                     if record.get("requires_manual_approval") or write_approval_enabled(subsystem):
