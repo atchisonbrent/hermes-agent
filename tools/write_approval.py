@@ -652,9 +652,6 @@ Source is a bounded window of whole messages. The context-level omitted_source_r
 other results were excluded for size or non-text modality, not that they support
 the proposal. Source-level omitted_nontext_parts counts omitted human image/audio
 parts. Only supplied text is evidence; never infer attachment contents.
-Generated caches in unreviewed_generated_caches are hash-versioned but NOT reviewed
-or proven equivalent to source. The reviewer does not execute them; Python might.
-Defer if their unreviewed contents are necessary to assess the proposal.
 The capacity object reports approximate budgeting, not evidence.
 Context-level omitted_earlier_user_messages counts excluded earlier human messages. Earlier
 human messages are verbatim antecedents, not authorization to ignore later
@@ -690,7 +687,6 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
     # Optional source is selected after complete owner files are captured.
     size = len(_encoded({**context, "source": []}).encode()) + len(_REVIEW_POLICY.encode())
     owner_budget = min(limit, config["max_input_tokens"] * 3)
-    cache_bytes = 0
 
     def capture(label, path):
         nonlocal size
@@ -715,7 +711,7 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
             try:
                 text = data.decode("utf-8")
             except UnicodeDecodeError:
-                raise _ReviewRefusal("Non-UTF8 owner file is not a verified generated cache") from None
+                raise _ReviewRefusal("Non-UTF8 owner file cannot be reviewed") from None
             version = [stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size,
                        hashlib.sha256(data).hexdigest()]
         except FileNotFoundError:
@@ -730,7 +726,6 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
     cfg_data = cfg_path.read_bytes() if cfg_path.exists() else b""
     context["config_version"] = hashlib.sha256(cfg_data).hexdigest()
     if subsystem == SKILLS:
-        from tools.durable_review_capacity import verified_bytecode_cache
         from tools.skill_manager_tool import _find_skill, _resolve_skill_dir, _validate_name
         ops = payload.get("operations") or [payload]
         owners = {}
@@ -758,22 +753,10 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
                             continue
                         if path.is_symlink():
                             raise _ReviewRefusal("Symlink owner")
-                        if len(context["files"]) + len(context.get("unreviewed_generated_caches", {})) >= 4096:
+                        if len(context["files"]) >= 4096:
                             raise _ReviewRefusal("Owner file safety ceiling exceeded (4096)")
-                        if verified_bytecode_cache(path, root):
-                            # Metadata does not prove that bytecode matches source.
-                            # Declare and version it; never transmit or execute it.
-                            with path.open("rb") as stream:
-                                data = stream.read(limit + 1)
-                            cache_bytes += len(data)
-                            if cache_bytes > limit:
-                                raise _ReviewRefusal("Generated cache safety ceiling exceeded")
-                            caches = context.setdefault("unreviewed_generated_caches", {})
-                            caches[f"{name}/{path.relative_to(root).as_posix()}"] = {
-                                "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-                            if len(caches) + len(context["files"]) >= 4096:
-                                raise _ReviewRefusal("Owner file safety ceiling exceeded (4096)")
-                            continue
+                        if "__pycache__" in [part.casefold() for part in path.relative_to(root).parts] or path.suffix.casefold() in {".pyc", ".pyo"}:
+                            raise _ReviewRefusal("Generated cache prevents complete owner review; no files changed")
                         capture(f"{name}/{path.relative_to(root).as_posix()}", path)
         context["owners"] = owners
         # Required originals must exist, or have been supplied by an earlier
