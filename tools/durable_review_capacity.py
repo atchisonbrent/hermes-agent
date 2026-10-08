@@ -2,9 +2,6 @@
 
 No network, credentials, inference, or persistent caches are used in preflight.
 """
-import importlib.util
-import struct
-from pathlib import Path
 
 from agent.model_metadata import (
     _CODEX_OAUTH_CONTEXT_FALLBACK,
@@ -33,27 +30,3 @@ def packet_tokens(policy, encoded_context):
     # Do not retain entire packets in the global message-estimator cache.
     size = len(policy.encode("utf-8")) + len(encoded_context.encode("utf-8"))
     return (size + 2) // 3 + 32
-
-
-def verified_bytecode_cache(path: Path, root: Path):
-    """Ignore only timestamp caches matching a present, non-linked source file.
-
-Malformed, stale, hash-based or unrecognized binary files remain fail-closed.
-The bytecode is never unmarshalled or executed. Symlinks are checked by the owner
-walker before calling this helper.
-"""
-    if path.parent.name != "__pycache__" or path.suffix != ".pyc":
-        return False
-    try:
-        source = Path(importlib.util.source_from_cache(str(path)))
-        if not source.is_relative_to(root) or source.is_symlink() or not source.is_file():
-            return False
-        with path.open("rb") as stream:
-            header = stream.read(16)
-        if len(header) != 16 or header[:4] != importlib.util.MAGIC_NUMBER:
-            return False
-        flags, timestamp, size = struct.unpack("<III", header[4:])
-        stat = source.stat()
-        return flags == 0 and timestamp == int(stat.st_mtime) & 0xFFFFFFFF and size == stat.st_size
-    except (OSError, ValueError, NotImplementedError):
-        return False

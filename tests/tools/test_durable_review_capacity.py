@@ -17,16 +17,16 @@ def configure(home, monkeypatch, **overrides):
     return config
 
 
-def test_large_attributed_evidence_and_generated_cache_reach_exact_packet(tmp_path, monkeypatch):
-    config = configure(tmp_path, monkeypatch)
+@pytest.mark.parametrize("limit", [131072, "auto"])
+def test_complete_evidence_applies_but_any_generated_cache_defers(tmp_path, monkeypatch, limit):
+    config = configure(tmp_path, monkeypatch, max_input_bytes=limit)
     skill = tmp_path / "skills" / "capacity-example"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: capacity-example\ndescription: Demonstrate capacity.\n---\nOld step.\n")
     script = skill / "scripts" / "example.py"
     script.parent.mkdir()
-    script.write_text("# Supporting evidence.\n" * 8000)
-    cache = py_compile.compile(str(script), doraise=True)
-    evidence = "Observed verification details.\n" * 4000
+    script.write_text("# Supporting evidence.\n" * (8000 if limit == "auto" else 100))
+    evidence = "Observed verification details.\n" * (4000 if limit == "auto" else 100)
     messages = [{"role": "user", "content": "Correct the demonstrated step."},
                 {"role": "assistant", "tool_calls": [{"id": "proof", "function": {"name": "read_file", "arguments": "{}"}}]},
                 {"role": "tool", "tool_call_id": "proof", "content": evidence}]
@@ -35,13 +35,6 @@ def test_large_attributed_evidence_and_generated_cache_reach_exact_packet(tmp_pa
         context = wa._review_context("skills", payload, wa._evidence.get(), config)
     assert any(s["text"] == evidence for s in context["source"])
     assert context["files"]["capacity-example/scripts/example.py"]["text"] == script.read_text()
-    assert not any("__pycache__" in name for name in context["files"])
-    assert len(context["unreviewed_generated_caches"]) == 1
-    original_cache = Path(cache).read_bytes()
-    Path(cache).write_bytes(original_cache + b"altered bytecode")
-    changed = wa._review_context("skills", payload, context["source"], config)
-    assert changed != context
-    Path(cache).write_bytes(original_cache)
     assert context["capacity"]["input_tokens_estimate"] > 0
     assert context["capacity"]["input_tokens_estimate"] <= config["max_input_tokens"]
     # Exercise the supported writer, including the model decision and fresh
@@ -56,15 +49,70 @@ def test_large_attributed_evidence_and_generated_cache_reach_exact_packet(tmp_pa
         result = json.loads(skill_manage(**payload))
     assert result["saved"] is True and len(calls) == 1
     assert "Verified step." in (skill / "SKILL.md").read_text()
-    # A fake/malformed cache must not be silently excluded by its directory name.
-    Path(cache).write_bytes(b"not a compiled module\xff")
+    # Even a genuine cache prevents review: header identity is not source proof.
+    compiled = py_compile.compile(str(script), doraise=True)
+    assert compiled is not None
+    cache = Path(compiled)
+    original = cache.read_bytes()
+    before = (skill / "SKILL.md").read_bytes()
+    calls.clear()
+    payload.update(old_string="Verified step.", new_string="Another verified step.")
+    for contents in (original, original + b"altered bytecode", b"plain text impostor"):
+        cache.write_bytes(contents)
+        with wa.review_evidence(messages):
+            result = json.loads(skill_manage(**payload))
+        assert result["saved"] is False
+        assert calls == []
+        assert (skill / "SKILL.md").read_bytes() == before
+        assert cache.read_bytes() == contents
+        with pytest.raises(wa._ReviewRefusal, match="cache"):
+            wa._review_context("skills", payload, context["source"], config)
+
+
+@pytest.mark.parametrize("relative", ["scripts/example.pyc", "scripts/example.pyo", "scripts/__PYCACHE__/x.PYC", "scripts/__pycache__/notes.txt"])
+def test_cache_paths_and_new_targets_refuse(tmp_path, monkeypatch, relative):
+    config = configure(tmp_path, monkeypatch)
+    skill = tmp_path / "skills" / "cache-example"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("Original step.")
+    source = [{"id": "source:0", "role": "user", "text": "Update the step."}]
+    payload = {"action": "write_file", "name": "cache-example", "file_path": relative, "file_content": "text"}
+    with pytest.raises(wa._ReviewRefusal, match="durable-write target"):
+        wa._review_context("skills", payload, source, config)
+    target = skill / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("text impostor")
+    with pytest.raises(wa._ReviewRefusal, match="prevents complete owner review"):
+        wa._review_context("skills", {"action": "patch", "name": "cache-example", "old_string": "Original", "new_string": "New"}, source, config)
+
+
+def test_cache_appearing_during_review_defers_and_other_binary_refuses(tmp_path, monkeypatch):
+    config = configure(tmp_path, monkeypatch)
+    skill = tmp_path / "skills" / "race-example"
+    skill.mkdir(parents=True)
+    owner = skill / "SKILL.md"
+    owner.write_text("---\nname: race-example\ndescription: Exercise cache races.\n---\nOriginal step.\n")
+    original = owner.read_bytes()
+    cache = skill / "late.pyc"
+    calls = []
+    def accept(context, settings):
+        calls.append(context)
+        cache.write_bytes(b"unreviewed cache")
+        return {"decision": "accept", "reason": "Fixture control.", "evidence": ["source:0"]}, {}
+    monkeypatch.setattr(wa, "_review_call", accept)
+    payload = {"action": "patch", "name": "race-example", "old_string": "Original step.", "new_string": "New step."}
+    from tools.skill_manager_tool import skill_manage
+    with wa.review_evidence([{"role": "user", "content": "Update the step."}]):
+        result = json.loads(skill_manage(**payload))
+    assert len(calls) == 1
+    assert result["saved"] is False and result["review_state"] == "defer"
+    assert owner.read_bytes() == original and cache.read_bytes() == b"unreviewed cache"
+    cache.unlink()  # Disposable fixture only, not runtime cleanup.
+    binary = skill / "assets" / "blob.bin"
+    binary.parent.mkdir()
+    binary.write_bytes(b"\xff\x00")
     with pytest.raises(wa._ReviewRefusal, match="Non-UTF8"):
-        wa._review_context("skills", payload, context["source"], config)
-    py_compile.compile(str(script), doraise=True)
-    # Generated content is never an allowed mutation target, even if excluded.
-    payload.update(action="write_file", file_path=str(Path(cache).relative_to(skill)), file_content="replacement")
-    with pytest.raises(wa._ReviewRefusal, match="cache"):
-        wa._review_context("skills", payload, context["source"], config)
+        wa._review_context("skills", payload, calls[0]["source"], config)
 
 
 @pytest.mark.parametrize("model", ["gpt-50", "x-gpt-5-y", "gpt-5-anything", "gpt-6-astra-900K", "GPT-6-ASTRA"])
