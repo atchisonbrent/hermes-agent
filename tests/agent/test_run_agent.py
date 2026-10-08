@@ -6263,7 +6263,7 @@ class TestAnthropicInterruptHandler:
     """_interruptible_api_call must handle Anthropic mode when interrupted."""
 
 
-    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self):
+    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self, agent):
         """#67142: a non-streaming Anthropic interrupt must abort the
         request-local client from the poll thread, never close/rebuild the
         shared _anthropic_client (which raced a live SSL BIO and corrupted an
@@ -6277,15 +6277,11 @@ class TestAnthropicInterruptHandler:
         from run_agent import AIAgent
         from agent.chat_completion_helpers import interruptible_api_call
 
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://api.anthropic.com",
-            provider="anthropic",
-            model="claude-test",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
+        # Client construction is not the subject: reuse the isolated agent,
+        # then exercise the real interrupt path with request-local doubles.
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com"
+        agent.model = "claude-test"
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
         agent._anthropic_client = MagicMock()

@@ -1198,6 +1198,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._response_store_home = str(get_hermes_home())
         self._response_stores: Dict[str, ResponseStore] = {}
         self._response_store_lock = threading.Lock()
+        self._active_run_agents: Dict[str, Any]
         _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: Dict[str, Any] = {}  # per-profile-home SessionDB cache
@@ -3458,6 +3459,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 events.enqueue("assistant.commentary", {
                     "message_id": message_id, "text": text, "already_streamed": bool(already_streamed)})
 
+        # The worker retains this per-run signal even if the stream task is
+        # cancelled during agent construction. No adapter registry to clean early.
+        stream_interrupt: Dict[str, str] = {}
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {
@@ -3466,10 +3471,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 self._set_run_status(run_id, "running", last_event="run.started")
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = await self._conversation_history_for_session(session_id)
+                if stream_interrupt.get("message"):
+                    # No executor has been submitted yet: avoid constructing an
+                    # agent (and running turn-start hooks) for a departed caller.
+                    self._set_run_status(run_id, "cancelled", last_event="run.cancelled")
+                    await queue.put(_event_payload("run.cancelled", {"interrupted": True}))
+                    return
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
-                    active_run_id=run_id, **ctx["run_kwargs"])
+                    active_run_id=run_id, stream_interrupt=stream_interrupt, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3491,6 +3502,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     output=final_response, usage=usage,
                     last_event=f"run.{status}", **fields)
             except asyncio.CancelledError:
+                stream_interrupt.setdefault("message", "SSE task cancelled")
+                agent = self._active_run_agents.get(run_id)
+                if agent is not None:
+                    with suppress(Exception):
+                        agent.interrupt(stream_interrupt["message"])
                 self._set_run_status(run_id, "cancelled", last_event="run.cancelled")
                 raise
             except Exception as exc:
@@ -3525,11 +3541,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await response.write(_sse_frame(payload, event=name, ensure_ascii=False))
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             await self._drain_session_stream_task_on_disconnect(
-                run_id, task, interrupt_message="SSE client disconnected", shield_wait=False)
-            logger.info("Session SSE client disconnected; interrupted live run %s", run_id)
+                run_id, task, interrupt_message="SSE client disconnected", stream_interrupt=stream_interrupt)
+            logger.info("Session SSE client disconnected; drained run %s", run_id)
         except asyncio.CancelledError:
             await self._drain_session_stream_task_on_disconnect(
-                run_id, task, interrupt_message="SSE task cancelled", shield_wait=True)
+                run_id, task, interrupt_message="SSE task cancelled", stream_interrupt=stream_interrupt)
             logger.info("Session SSE task cancelled; drained live run %s", run_id)
             raise
         except Exception as exc:
@@ -3537,21 +3553,26 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return response
 
     async def _drain_session_stream_task_on_disconnect(
-        self, run_id: str, task: "asyncio.Task", *, interrupt_message: str, shield_wait: bool
+        self, run_id: str, task: "asyncio.Task", *, interrupt_message: str,
+        stream_interrupt: Optional[Dict[str, str]] = None,
     ) -> None:
         """Preserve live run control refs until the executor-backed turn actually exits."""
-        agent = self._active_run_agents.get(run_id)
-        if agent is None:
-            if not task.done():
-                task.cancel()
-                with suppress(Exception):
-                    await task
+        if task.done():
             return
-        with suppress(Exception):
-            agent.interrupt(interrupt_message)
+        # Publish before reading the registration: the worker also registers
+        # before consuming this signal, closing both sides of the startup race.
+        if stream_interrupt is not None:
+            stream_interrupt["message"] = interrupt_message
+        agent = self._active_run_agents.get(run_id)
+        # A missing agent is not proof the run never started: _run_agent
+        # releases its control reference before the wrapper records output.
+        # Cancelling here can erase a completed answer during disconnect.
+        if agent is not None:
+            with suppress(Exception):
+                agent.interrupt(interrupt_message)
         if not task.done():
             with suppress(Exception):
-                await (asyncio.shield(task) if shield_wait else task)
+                await asyncio.shield(task)
 
     @_require_auth
     async def _handle_session_model_lock(self, request: "web.Request") -> "web.Response":
@@ -3982,7 +4003,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
-        resume_unanswered_turn: bool = False) -> tuple:
+        resume_unanswered_turn: bool = False,
+        stream_interrupt: Optional[Dict[str, str]] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -4035,6 +4057,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         adopt_unanswered_turn(conversation_history, user_message, agent)
                     if active_run_id:
                         self._active_run_agents[active_run_id] = agent
+                        pending_interrupt = (stream_interrupt or {}).get("message")
+                        if pending_interrupt is not None:
+                            agent.interrupt(pending_interrupt)
                     effective_task_id = session_id or str(uuid.uuid4())
                     # Process baseline for disconnect reaping (this surface bypasses TurnRunner)
                     # + shutdown-interrupt registration, once for every caller.
