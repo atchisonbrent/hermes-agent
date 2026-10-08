@@ -1015,7 +1015,8 @@ def test_interrupted_but_completed_reference_keeps_real_accounting(monkeypatch):
     assert acct.usage.input_tokens == 11
 
 
-def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch):
+@pytest.mark.parametrize("fast_is_late", [False, True])
+def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch, fast_is_late):
     """A reference still in flight at interrupt time gets a placeholder in
     the results, but its eventual REAL accounting must reach the sink."""
     import threading
@@ -1027,19 +1028,29 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
 
     fake_agent = SimpleNamespace(_interrupt_requested=False)
     release = threading.Event()
+    release_fast = threading.Event()
+    slow_started = threading.Event()
+    fast_seen = threading.Event()
     sink_calls = []
     sink_seen = threading.Event()
 
     def sink(label, accounting):
         sink_calls.append((label, accounting))
-        sink_seen.set()
+        if "wedged" in label:
+            sink_seen.set()
+        else:
+            fast_seen.set()
 
     def fake_call_llm(**kwargs):
         if kwargs["provider"] == "fast":
+            assert slow_started.wait(timeout=5)
             fake_agent._interrupt_requested = True
+            if fast_is_late:
+                assert release_fast.wait(timeout=5)
             return _response("fast output")
         # wedged: blocks past the interrupt, completes later.
-        release.wait(timeout=5)
+        slow_started.set()
+        assert release.wait(timeout=5)
         return _response_with_usage("late output", prompt=21, completion=2)
 
     monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
@@ -1064,11 +1075,21 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
     assert out[1][2].usage.input_tokens == 0
 
     # …then completes late; its real billed usage must reach the sink.
+    if fast_is_late:
+        release_fast.set()
+        assert fast_seen.wait(timeout=5), "forced first callback never arrived"
     release.set()
     assert sink_seen.wait(timeout=5), "late accounting sink never called"
-    label, acct = sink_calls[0]
+    if out[0][1] == moa_loop._INTERRUPTED_REFERENCE_NOTE:
+        assert fast_seen.wait(timeout=5), "fast reference accounting never settled"
+    # A nominally fast reference can also finish after interruption. Callback
+    # order is not the contract; the wedged slot must report its real usage once.
+    late_calls = [(label, acct) for label, acct in sink_calls if "wedged" in label]
+    assert len(late_calls) == 1
+    label, acct = late_calls[0]
     assert "wedged" in label
     assert acct.usage.input_tokens == 21
+    assert acct.usage.output_tokens == 2
 
 
 def test_facade_does_not_cache_interrupted_reference_results(monkeypatch, tmp_path):

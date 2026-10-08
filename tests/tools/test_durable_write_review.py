@@ -69,13 +69,13 @@ def test_combined_omissions_survive_apply_time_recheck(review, monkeypatch):
     wa, jobs, home = review
     messages = [
         {"role": "user", "content": "Older statement."},
-        {"role": "user", "content": "Correction: " + "x" * 16000},
+        {"role": "user", "content": "Correction: " + "x" * 70000},
         {"role": "user", "content": "Remember that I prefer concise replies."},
         {"role": "assistant", "tool_calls": [{"id": "large", "function": {"name": "read_file", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "large", "content": "x" * 20000},
+        {"role": "tool", "tool_call_id": "large", "content": "x" * 70000},
     ]
     def decide(context, config):
-        assert context["source"][0]["omitted_user_messages"] == 2
+        assert context["omitted_earlier_user_messages"] == 2
         assert context["omitted_source_results"] == 1
         return answer()
     monkeypatch.setattr(wa, "_review_call", decide)
@@ -143,7 +143,7 @@ def test_incomplete_or_sensitive_context_never_calls_reviewer(review, monkeypatc
     if kind == "memory":
         (home / "memories").mkdir(exist_ok=True)
         (home / "memories/MEMORY.md").write_text("x" * 140000)
-    text = "x" * 17000 if kind == "source" else "Please save my preference."
+    text = "x" * 70000 if kind == "source" else "Please save my preference."
     if kind == "secret":
         text += " password=not-for-export-12345"
     if kind == "multiline_secret":

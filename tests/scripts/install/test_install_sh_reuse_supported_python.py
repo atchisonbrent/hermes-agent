@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import shlex
 import stat
 import subprocess
 from pathlib import Path
@@ -31,14 +32,27 @@ def _run_prerequisites(tmp_path: Path, *, uv_find_script: str) -> subprocess.Com
     _exe(hermes_home / "bin" / "uv", "#!/bin/sh\n[ \"$1\" = --version ] && { echo 'uv 0.9.0'; exit 0; }\n"
          "if [ \"$1\" = python ] && [ \"$2\" = find ]; then\n" + uv_find_script + "fi\n"
          "if [ \"$1\" = python ] && [ \"$2\" = install ]; then echo 'DOWNLOAD ATTEMPTED' >&2; exit 1; fi\nexit 0\n")
-    for tool in ("git", "node", "npm", "curl", "rg", "g++", "c++"):
-        _exe(bin_dir / tool, "#!/bin/sh\ncase \"$1\" in --version|-v) echo 'v22.12.0 2.50.0';; esac\nexit 0\n")
+    for tool in ("git", "node", "npm", "rg", "g++", "c++", "ffmpeg"):
+        _exe(bin_dir / tool, "#!/bin/sh\ncase \"$1\" in --version|-v) echo 'v22.22.0 2.50.0';; esac\nexit 0\n")
+    unexpected = tmp_path / "unexpected-install"
+    for tool in ("apt", "apt-get", "dnf", "pacman", "sudo", "brew", "zypper", "apk", "pkg", "cargo", "xcode-select", "curl", "wget"):
+        probe = '[ "$1" = -fsSI ] && exit 0\n' if tool == "curl" else ""
+        _exe(bin_dir / tool, "#!/bin/sh\n" + probe + "printf '%s\\n' \"$0 $*\" >> " + shlex.quote(str(unexpected)) + "\nexit 97\n")
     env = os.environ.copy()
     env.update({"HOME": str(home), "HERMES_HOME": str(hermes_home),
                 "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', os.defpath)}"})
     bash = shutil.which("bash") or "/bin/bash"
-    return subprocess.run([bash, str(INSTALL_SH), "--stage", "prerequisites", "--non-interactive"],
-                          env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    result = subprocess.run([bash, str(INSTALL_SH), "--stage", "prerequisites", "--non-interactive"],
+                            env=env, text=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, check=False, timeout=30)
+    assert not unexpected.exists(), unexpected.read_text() if unexpected.exists() else ""
+    return result
+
+
+@pytest.mark.linux_only
+def test_redirected_package_install_is_detected(tmp_path: Path) -> None:
+    with pytest.raises(AssertionError, match="/apt"):
+        _run_prerequisites(tmp_path, uv_find_script="  apt install fixture >/dev/null 2>&1\n  exit 2\n")
 
 
 @pytest.mark.linux_only
@@ -48,5 +62,6 @@ def test_supported_newer_python_is_reused_instead_of_downloading_311(tmp_path: P
         # The range probe must carry --system: with the install's own venv activated, a plain
         # `uv python find` returns venv/bin/python3, which setup_venv then deletes.
         f"  [ \"$3\" = 3.11 ] && exit 2\n  [ \"$3\" = --system ] && [ \"$4\" = '>=3.11,<3.14' ] && {{ echo {tmp_path}/bin/python3.13; exit 0; }}\n  exit 2\n"))
+    assert result.returncode == 0, result.stdout
     assert "DOWNLOAD ATTEMPTED" not in result.stdout, result.stdout
     assert "Python found: Python 3.13.12" in result.stdout, result.stdout

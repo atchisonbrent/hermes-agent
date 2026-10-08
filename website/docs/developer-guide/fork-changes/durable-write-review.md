@@ -29,7 +29,7 @@ durable_write_review:
   enabled: true
   provider: openai-codex
   model: gpt-6-astra
-  max_input_bytes: 65536
+  max_input_bytes: auto
 ```
 
 The reviewer model is configurable. This implementation supports the Codex OAuth
@@ -43,14 +43,51 @@ with unknown effects. Such a result requires record/target reconciliation, never
 an automatic retry. This feature does not override configured timeouts.
 The endpoint
 does not support an output-token cap; none is promised. Input is bounded by the
-configured byte limit, including instructions (default 64 KiB; range 1–128 KiB).
-Malformed values fail closed; blocked results name the configuration key, never
-its value. Unexpected parser failures retain the generic refusal message.
+configured byte limit, including instructions. Existing numeric budgets are preserved
+(default 64 KiB); `auto` uses a separate 16 MiB I/O safety ceiling. Numeric budgets
+from 1 KiB through 16 MiB are accepted. This ceiling is not a model context window.
+
+Every packet also uses the existing **Codex-route** context catalog for its exact
+concrete reviewer model, never the interactive agent's window or the direct-API
+catalog. Unknown capacity refuses the write before staging or inference. Preflight reserves the greater of 8192 tokens or
+20% of that window for output/reasoning, framing and estimation error, then counts
+the complete serialized packet with a conservative UTF-8-byte estimate. The estimate
+is not an exact vendor token count or an output-token cap; provider refusal still
+fails closed. No credentials or network probes are used for capacity preflight.
+
+Source collection uses the same configured byte ceiling, replacing its independent
+16,000-byte cutoff. Whole-message selection and declared omissions remain; the
+complete owner/payload/policy/evidence packet must then satisfy both byte and token
+budgets or defer. Overflow reports measured/estimated size and the limiting budget,
+not private file content. It does not truncate owner files or automatically split an
+atomic proposal. An oversized current human message is rejected by collection
+and currently surfaces as unavailable original source rather than a numeric overflow. `auto` does not guarantee that every skill package fits, or extend
+the 120-second transport deadline. Optional source is selected against remaining packet capacity after complete
+owner capture, with counted omissions; the current human message is mandatory.
+Collection is lazy at durable-write staging, not repeated for unrelated tools.
+The estimate uses ceil(UTF-8 bytes/3) plus framing, not an exact tokenizer; dense
+input may still exceed the provider window and defer without applying. Malformed values fail closed; error messages
+name configuration keys and may include numeric capacity limits, never secrets.
+
+Numeric-to-`auto` rollout is ordered: deploy and verify compatible code first,
+then set the shared policy for each intended profile. Before rolling code back,
+restore a numeric policy first; older code rejects `auto` and blocks durable writes.
+`auto` permits larger per-write model inputs and may surface more sensitive-context
+refusals from newly included evidence. Use an explicit numeric cap when a smaller
+per-write resource budget is desired.
 
 ## What gets reviewed
 
 - Exact proposed operations, complete current USER/MEMORY, and complete affected
-  local skill packages, including supporting files.
+  local skill packages, including supporting files. The sole generated-file exception
+  is a timestamp-style Python `__pycache__/*.pyc` whose header matches a present,
+  non-linked source's mtime and size. These caches are not exported as content or executed by the reviewer. They are
+  explicitly declared and hash-versioned, including during the pre-apply recheck.
+  Header validation does not prove equivalence to source: Python itself may execute
+  these unreviewed files. Defer when their contents matter to the decision.
+  Stale, malformed, hash-based and other non-UTF8 files still defer; symlinks still
+  refuse. Generated cache paths are forbidden mutation targets. A separate 4096-file
+  I/O safety ceiling bounds package enumeration.
 - The complete current human message, a bounded contiguous suffix of earlier
   human messages, and recent attributable current-turn whole tool results.
   Earlier messages are verbatim antecedents, not assistant claims or generated
@@ -60,9 +97,9 @@ its value. Unexpected parser failures retain the generic refusal message.
   existing human-message classifier. No full transcript replay, persistence-tool
   echo, or delegated-agent result. Messages already removed by compaction are
   not reconstructed; missing evidence still defers.
-  Sequential dispatch captures evidence at batch entry, so earlier tool results
-  from that same batch are not yet available. Concurrent calls capture at their
-  own entry and may see already-committed sibling results. Missing evidence
+  Dispatch retains the source-list reference; evidence is materialized at durable
+  staging. Earlier same-batch tool results may therefore be available. Concurrent
+  calls may see already-committed sibling results. Missing evidence
   never authorizes an automatic write. Non-text tool results (images/audio) are
   omitted as whole results and counted, without discarding earlier human text.
   Multimodal human messages retain their verbatim text parts with an explicit
@@ -150,6 +187,6 @@ enters its mutation body. The shared lock does not promise POSIX-style indefinit
 waiting on Windows. Such a failure is not a completed write or an automatic
 retry; native Windows contention/recovery validation remains outstanding.
 
-Tests: `tests/tools/test_durable_write_review.py` and
+Tests: `tests/tools/test_durable_review_capacity.py`, `tests/tools/test_durable_write_review.py` and
 `tests/tools/test_durable_review_evidence.py`, plus the existing memory, staging,
 skill batch/provenance and background-review regression suites.

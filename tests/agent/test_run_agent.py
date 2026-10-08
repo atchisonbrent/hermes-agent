@@ -59,6 +59,9 @@ def agent():
             "model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")
         ),
         patch("model_tools.check_toolset_requirements", return_value={}),
+        # Definitions are supplied above; don't rediscover real plugins for
+        # every unit-test instance. Plugin integration has its own suites.
+        patch("hermes_cli.plugins.discover_plugins"),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
@@ -70,6 +73,14 @@ def agent():
         )
         a.client = MagicMock()
         return a
+
+
+def test_agent_fixture_does_not_discover_real_plugins(request):
+    from hermes_cli import plugins
+    with patch.object(plugins, "discover_plugins", wraps=plugins.discover_plugins) as discover:
+        instance = request.getfixturevalue("agent")
+    assert instance.valid_tool_names == {"web_search"}
+    discover.assert_not_called()
 
 
 def test_persist_user_message_override_rewrites_text_turns(agent):
@@ -6263,7 +6274,7 @@ class TestAnthropicInterruptHandler:
     """_interruptible_api_call must handle Anthropic mode when interrupted."""
 
 
-    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self):
+    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self, agent):
         """#67142: a non-streaming Anthropic interrupt must abort the
         request-local client from the poll thread, never close/rebuild the
         shared _anthropic_client (which raced a live SSL BIO and corrupted an
@@ -6277,15 +6288,11 @@ class TestAnthropicInterruptHandler:
         from run_agent import AIAgent
         from agent.chat_completion_helpers import interruptible_api_call
 
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://api.anthropic.com",
-            provider="anthropic",
-            model="claude-test",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
+        # Client construction is not the subject: reuse the isolated agent,
+        # then exercise the real interrupt path with request-local doubles.
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com"
+        agent.model = "claude-test"
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
         agent._anthropic_client = MagicMock()

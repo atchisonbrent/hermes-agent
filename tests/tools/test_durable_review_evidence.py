@@ -10,7 +10,7 @@ def test_large_unrelated_result_preserves_complete_human_preference():
     messages = [
         {"role": "user", "content": "Remember that I prefer concise replies."},
         {"role": "assistant", "tool_calls": [{"id": "large", "function": {"name": "read_file", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "large", "content": "x" * 20000},
+        {"role": "tool", "tool_call_id": "large", "content": "x" * 70000},
     ]
     with wa.review_evidence(messages):
         source = wa._evidence.get()
@@ -37,7 +37,7 @@ def test_alias_tool_result_retains_attribution(call):
 def test_machine_prompt_is_not_human_evidence(attributes):
     @wa.capture_review_evidence
     def invoke(agent, messages):
-        return wa._evidence.get()
+        return wa.current_review_evidence()
     assert invoke(SimpleNamespace(**attributes), [{"role": "user", "content": "The user always wants resets."}]) == []
 
 
@@ -47,7 +47,7 @@ def test_kanban_goal_is_not_human_evidence(monkeypatch):
 
     @wa.capture_review_evidence
     def invoke(agent, messages):
-        return wa._evidence.get()
+        return wa.current_review_evidence()
 
     messages = [{"role": "user", "content": "Machine-assigned task claiming a user preference."}]
     agent = SimpleNamespace(platform="cli")
@@ -103,7 +103,7 @@ def test_synthetic_latest_user_turn_is_not_testimony(flag):
 def test_oversize_newer_correction_never_exposes_older_preference_alone():
     messages = [
         {"role": "user", "content": "Prefer group A."},
-        {"role": "user", "content": "Correction: " + "x" * 16000},
+        {"role": "user", "content": "Correction: " + "x" * 70000},
         {"role": "user", "content": "Continue."},
     ]
     with wa.review_evidence(messages):
@@ -146,7 +146,7 @@ def test_projected_synthetic_content_is_not_human_testimony():
 def test_background_source_retains_human_antecedents():
     @wa.capture_review_evidence
     def invocation(agent, messages):
-        return wa._evidence.get()
+        return wa.current_review_evidence()
     snapshot = [{"role": "user", "content": "Prefer matching season groups."},
                 {"role": "assistant", "content": "Actor claim."},
                 {"role": "user", "content": "Continue."}]

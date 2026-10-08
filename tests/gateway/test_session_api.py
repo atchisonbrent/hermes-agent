@@ -1202,6 +1202,132 @@ async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase,cancel_wrapper,disconnect", [("history", False, True), ("construction", False, True), ("construction", True, True), ("construction", True, False)])
+async def test_disconnect_before_agent_registration_is_remembered(adapter, session_db, phase, cancel_wrapper, disconnect):
+    from gateway.platforms.api_server_runs import api_worker_live_count
+    session_id = session_db.create_session("early-disconnect", "api_server")
+    disconnected = asyncio.Event()
+    interrupted = threading.Event()
+    constructing = threading.Event()
+    release_constructor = threading.Event()
+    tasks = []
+    original_track = adapter._track_background_task
+    if phase == "history":
+        release_constructor.set()
+
+    class FakeAgent:
+        session_prompt_tokens = session_completion_tokens = session_total_tokens = 0
+        def __init__(self):
+            self.session_id = session_id
+            constructing.set()
+            assert release_constructor.wait(5)
+        def interrupt(self, message=None):
+            interrupted.set()
+        def run_conversation(self, **kwargs):
+            return {"final_response": "Stopped before work.", "session_id": session_id,
+                    "interrupted": interrupted.is_set()}
+
+    def track(task):
+        tasks.append(task)
+        original_track(task)
+
+    async def history(_session_id):
+        if phase == "history":
+            await disconnected.wait()
+        return []
+
+    class DeadStream:
+        async def prepare(self, request):
+            pass
+        async def write(self, payload):
+            if phase == "construction":
+                assert await asyncio.to_thread(constructing.wait, 5)
+            disconnected.set()
+            if disconnect:
+                raise ConnectionResetError("controlled early disconnect")
+
+    async def workers_finished():
+        while api_worker_live_count():
+            await asyncio.sleep(0.01)
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+         patch.object(adapter, "_read_json_body", return_value=({"message": "go"}, None)), \
+         patch.object(adapter, "_conversation_history_for_session", side_effect=history), \
+         patch.object(adapter, "_create_agent", side_effect=lambda **kw: FakeAgent()) as create, \
+         patch.object(adapter, "_track_background_task", side_effect=track), \
+         patch("gateway.platforms.api_server.web.StreamResponse", return_value=DeadStream()):
+        handler = asyncio.create_task(adapter._handle_session_chat_stream(request))
+        try:
+            await asyncio.wait_for(disconnected.wait(), 5)
+            if cancel_wrapper:
+                tasks[0].cancel()  # Same owner cancellation used by adapter shutdown.
+                if disconnect:
+                    with pytest.raises(asyncio.CancelledError):
+                        await handler
+                else:
+                    await handler
+                release_constructor.set()
+            else:
+                release_constructor.set()
+                await handler
+        finally:
+            release_constructor.set()
+            await asyncio.wait_for(workers_finished(), 5)
+        if phase == "history":
+            create.assert_not_called()
+        else:
+            assert interrupted.is_set(), "disconnect must survive cancellation of the stream wrapper"
+    record = next(iter(adapter._run_statuses.values()))
+    assert record["status"] == "cancelled"
+    if not cancel_wrapper and phase == "construction":
+        assert record["output"] == "Stopped before work."
+
+
+@pytest.mark.asyncio
+async def test_cancelled_disconnect_handler_does_not_cancel_completion(adapter):
+    release = asyncio.Event()
+    async def finalize():
+        await release.wait()
+        return "preserved"
+    task = asyncio.create_task(finalize())
+    drain = asyncio.create_task(adapter._drain_session_stream_task_on_disconnect(
+        "finishing", task, interrupt_message="disconnected"))
+    await asyncio.sleep(0)
+    drain.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await drain
+    release.set()
+    assert await task == "preserved"
+
+
+@pytest.mark.asyncio
+async def test_session_disconnect_does_not_cancel_completion_tail(adapter):
+    """The executor may release its agent before the SSE task records output."""
+    finishing = asyncio.Event()
+    release = asyncio.Event()
+    completed = []
+
+    async def finalize():
+        finishing.set()
+        await release.wait()
+        completed.append("recoverable output")
+
+    task = asyncio.create_task(finalize())
+    await finishing.wait()
+    # _run_agent's finally has already removed the agent control reference.
+    drain = asyncio.create_task(adapter._drain_session_stream_task_on_disconnect(
+        "completed-executor", task, interrupt_message="disconnected"))
+    await asyncio.sleep(0)
+    release.set()
+    await drain
+    assert completed == ["recoverable output"]
+    assert not task.cancelled()
+
+
+@pytest.mark.asyncio
 async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapter, session_db, monkeypatch):
     """Codex commentary / mid-turn assistant text is a typed ``assistant.commentary`` event on the
     session SSE endpoint and a ``phase: commentary`` message item on /v1/responses, never part of
