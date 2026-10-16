@@ -534,7 +534,10 @@ describe('useVirtualHistory offset cache reuse', () => {
     })
 
     try {
-      await delay(20)
+      // Generous settle windows: the unmount-measurement callback must fire
+      // before the assertion, and under CI load a 20-40ms sleep is not
+      // enough (flaked as "adjustScrollTop called 0 times").
+      await delay(50)
       const scroll = expose.current!.scroll!
 
       scroll.scrollTo(0)

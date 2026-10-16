@@ -29,7 +29,7 @@ def test_gpt61_sol_variant_respects_lower_live_catalog_ceiling(monkeypatch):
     token = "test-catalog-token"
     published_ceiling = 800_000
     monkeypatch.setattr(metadata, "_fetch_codex_oauth_context_lengths_with_source",
-                        lambda _: ({"gpt-6.1-sol": metadata._CODEX_OAUTH_STALE_ADVERTISED_CTX}, True))
+                        lambda _, **kwargs: ({"gpt-6.1-sol": metadata._CODEX_OAUTH_STALE_ADVERTISED_CTX}, True))
     monkeypatch.setattr(metadata, "_codex_oauth_max_context_cache", {
         metadata._codex_oauth_token_fingerprint(token): {"gpt-6.1-sol": published_ceiling}})
     assert metadata._resolve_codex_oauth_context_length_with_source(

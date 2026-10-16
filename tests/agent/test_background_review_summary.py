@@ -9,9 +9,7 @@ import json
 
 from run_agent import AIAgent
 
-
 _summarize = AIAgent._summarize_background_review_actions
-
 
 def _tool_msg(tool_call_id, payload):
     return {
@@ -19,6 +17,18 @@ def _tool_msg(tool_call_id, payload):
         "tool_call_id": tool_call_id,
         "content": json.dumps(payload),
     }
+
+def test_review_notifications_name_batch_targets_without_exposing_content():
+    for state in ("pending", "applied"):
+        args = {"operations": [{"action": "patch", "name": "alpha", "new_string": "private detail"}, {"action": "patch", "name": "beta"}]}
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "batch", "type": "function", "function": {"name": "skill_manage", "arguments": json.dumps(args)}}]},
+            _tool_msg("batch", {"success": True, "review_state": state, "message": "Review status."}),
+        ]
+        lines = _summarize(messages, [])
+        assert len(lines) == 1
+        assert state in lines[0] and "alpha" in lines[0] and "beta" in lines[0]
+        assert "private detail" not in lines[0]
 
 
 def test_skips_prior_tool_messages_by_tool_call_id():
@@ -45,7 +55,6 @@ def test_skips_prior_tool_messages_by_tool_call_id():
     assert "Cron job 'remind-me' created." not in actions
     assert "User profile updated" in actions
 
-
 def test_includes_genuinely_new_actions():
     new_payload = {
         "success": True,
@@ -56,7 +65,6 @@ def test_includes_genuinely_new_actions():
     actions = _summarize(review_messages, prior_snapshot=[])
 
     assert actions == ["Memory entry created."]
-
 
 def test_falls_back_to_content_equality_when_tool_call_id_missing():
     """If a tool message has no tool_call_id, match prior entries by content."""
@@ -73,9 +81,6 @@ def test_falls_back_to_content_equality_when_tool_call_id_missing():
     assert "Cron job 'X' created." not in actions
     assert "Skill created." in actions
 
-
-
-
 def test_handles_non_json_tool_content_gracefully():
     review_messages = [
         {"role": "tool", "tool_call_id": "x", "content": "not-json"},
@@ -86,11 +91,6 @@ def test_handles_non_json_tool_content_gracefully():
 
     assert actions == ["Memory updated."]
 
-
 def test_empty_inputs():
     assert _summarize([], []) == []
     assert _summarize(None, None) == []
-
-
-
-

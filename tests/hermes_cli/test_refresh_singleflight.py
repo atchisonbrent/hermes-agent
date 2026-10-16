@@ -3,7 +3,6 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
 
 import pytest
 from fastapi import FastAPI
@@ -200,18 +199,21 @@ def test_cookie_gate_burst_with_stale_rt_rotates_once(gated_web_app):
     register_provider(provider)
     cookies = {"hermes_session_at": "expired-at", "hermes_session_rt": "stale-rt",
                "hermes_session_provider": "stub"}
+    clients_ready = threading.Barrier(5)
 
-    # Start each client's application lifespan before timing the request burst.
-    # Separate clients keep cookie jars isolated; startup is not refresh latency.
-    with ExitStack() as stack:
-        clients = [stack.enter_context(TestClient(gated_web_app, base_url="http://gw.example.test"))
-                   for _ in range(4)]
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [pool.submit(client.get, "/api/auth/me", cookies=cookies) for client in clients]
-            try:
-                assert provider.entered.wait(3)
-            finally:
-                provider.release.set()
-            statuses = sorted(f.result(timeout=10).status_code for f in futures)
+    def call():
+        # One TestClient per request: a shared jar would hand later requests the rotated RT.
+        with TestClient(gated_web_app, base_url="http://gw.example.test") as client:
+            clients_ready.wait(timeout=60)
+            return client.get("/api/auth/me", cookies=cookies)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(call) for _ in range(4)]
+        clients_ready.wait(timeout=60)
+        try:
+            assert provider.entered.wait(10)
+        finally:
+            provider.release.set()
+        statuses = sorted(f.result(timeout=10).status_code for f in futures)
     assert statuses == [200, 200, 200, 200]
     assert provider.calls == 1

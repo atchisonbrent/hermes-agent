@@ -23,6 +23,39 @@ def test_session_db_path_override_separates_state_from_hermes_home(tmp_path, mon
     assert not (isolated_home / "state.db").exists()
 
 
+def test_external_session_db_keeps_profile_prompt_paths(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from agent.system_prompt import _agent_home, _agent_skills_dir
+    from hermes_state import SessionDB
+
+    home = tmp_path / "profile"
+    target = tmp_path / "storage" / "state.db"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SESSION_DB_PATH", str(target))
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(None)
+    try:
+        # The global test fixture deliberately repoints DEFAULT_DB_PATH after
+        # the module's first import; explicitly select the integration DB here.
+        with SessionDB(target) as db:
+            assert db.db_path == target
+            agent = SimpleNamespace(_session_db=db)
+            assert _agent_home(agent) == home
+            assert _agent_skills_dir(agent) == home / "skills"
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_terminal_children_do_not_inherit_external_session_database(tmp_path, monkeypatch):
+    from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+    target = str(tmp_path / "external.db")
+    monkeypatch.setenv("HERMES_SESSION_DB_PATH", target)
+    assert "HERMES_SESSION_DB_PATH" not in _make_run_env({})
+    assert "HERMES_SESSION_DB_PATH" not in _sanitize_subprocess_env({"HERMES_SESSION_DB_PATH": target})
+
+
 def test_repointed_default_db_path_wins_over_session_db_environment(tmp_path, monkeypatch):
     import hermes_state
 
@@ -85,5 +118,5 @@ assert Path(os.environ["TARGET_DB"]).is_file()
 assert not (Path(os.environ["HERMES_HOME"]) / "state.db").exists()
 '''
     result = subprocess.run([sys.executable, "-c", program], env=env,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr

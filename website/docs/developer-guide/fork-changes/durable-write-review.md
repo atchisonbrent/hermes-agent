@@ -32,7 +32,10 @@ durable_write_review:
   max_input_bytes: auto
 ```
 
-The reviewer model is configurable. This implementation supports the Codex OAuth
+The reviewer model is configurable and must be available to the active profile's
+Codex account. Account/model refusal defers the proposal rather than selecting a
+fallback; an account-gated default is not a promise of universal availability.
+This implementation supports the Codex OAuth
 route only: no API endpoint, model fallback, virtual context-window alias, tools,
 or autonomous rewrite. Each proposal makes at most one request, with a
 120-second transport deadline and two active reviewers per process. The generic
@@ -103,7 +106,8 @@ per-write resource budget is desired.
   omitted as whole results and counted, without discarding earlier human text.
   Multimodal human messages retain their verbatim text parts with an explicit
   omitted-part count; image/audio contents are never inferred.
-- Cron, delegated, and dispatcher-owned Kanban goals are not human testimony. Background candidate authors
+- Cron, curator, delegated, dispatcher-owned Kanban goals, and synthetic standing-goal
+  continuations are not human testimony. Background candidate authors
   preserve the original source provenance rather than supplying their own prompt.
 
 The reviewer accepts, rejects, or defers the entire proposal. Acceptance requires
@@ -128,7 +132,11 @@ Configuration is intentionally re-read when staging, not cached from the initial
 gate check. Disabling review between those reads leaves a human-staged proposal,
 not permission to apply it without review. The extra local read is preferred to
 passing stale authorization through the staging boundary.
-Copied origin/read-mark context preserves background skill ownership guards.
+Malformed configuration fails closed with an explicit error: the gate cannot
+assume review is disabled from a configuration it cannot parse.
+Copied origin/read-mark context preserves the native delete guards. Background
+prompts separately constrain content writes; native content APIs do not enforce
+ownership for every operation.
 
 The pending record is claimed before review and fenced as `applying` before any
 side effect. No startup scanner or automatic retry replays old approvals.
@@ -140,6 +148,10 @@ Successful automatic writes and automatic rejections move to compact receipts un
 `pending/<subsystem>/receipts/`, with decision, model, hashes and returned usage.
 Other outcomes remain visible through `/memory pending` or `/skills pending`,
 and are returned directly to the invoking model. Receipts and pending records
+are written with mode 0600 on POSIX. Deferred records retain their evidence until
+explicit disposition; there is no automatic expiry that could silently discard
+an unresolved proposal. Compact terminal receipts omit the full review context.
+Receipts and pending records
 retain the originating agent session/platform when available. Process death or
 transport cancellation can still interrupt response delivery: inspect the exact
 record, receipt and target before retrying; no automatic replay is introduced.

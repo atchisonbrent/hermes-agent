@@ -88,7 +88,7 @@ def test_combined_omissions_survive_apply_time_recheck(review, monkeypatch):
 
 
 def test_thread_start_failure_defers_with_reason(review, monkeypatch):
-    wa, jobs, home = review
+    wa, _jobs, home = review
     def fail(callback):
         raise RuntimeError("thread unavailable")
     monkeypatch.setattr(wa, "_start_review", fail)
@@ -100,7 +100,7 @@ def test_thread_start_failure_defers_with_reason(review, monkeypatch):
 
 
 def test_omission_metadata_is_context_level(review):
-    wa, jobs, home = review
+    wa, _jobs, _home = review
     source = [{"id": "source:0", "role": "user", "text": "Prefers concise replies.",
                "omitted_tool_results": 2}]
     context = wa._review_context("memory", {"action": "add", "target": "user", "content": "Prefers concise replies."}, source, wa.review_config())
@@ -184,7 +184,7 @@ def test_stale_context_never_overwrites(review, monkeypatch, changed):
 
 @pytest.mark.parametrize("state", ["reviewing", "applying", "accepted", "applied"])
 def test_no_automatic_replay_after_restart(review, monkeypatch, state):
-    wa, jobs, home = review
+    wa, _jobs, home = review
     result = staged_memory(wa)
     record = wa.get_pending("memory", result["pending_id"])
     record["review"]["state"] = state
@@ -214,7 +214,7 @@ def test_human_gate_remains_required_after_automatic_acceptance(review, monkeypa
 
 @pytest.mark.parametrize("state", ["applying", "applied"])
 def test_manual_approval_cannot_replay_uncertain_auto_apply(review, state):
-    wa, jobs, home = review
+    wa, _jobs, home = review
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools.memory_tool import MemoryStore
     result = staged_memory(wa)
@@ -227,7 +227,7 @@ def test_manual_approval_cannot_replay_uncertain_auto_apply(review, state):
 
 
 def test_broken_config_fails_closed(review):
-    wa, jobs, home = review
+    wa, _jobs, home = review
     (home / "config.yaml").write_text("durable_write_review: [broken yaml")
     result = staged_memory(wa)
     assert not result["success"]
@@ -236,7 +236,7 @@ def test_broken_config_fails_closed(review):
 
 @pytest.fixture
 def skill_owner(review):
-    wa, jobs, home = review
+    _wa, _jobs, home = review
     root = home / "skills/probe"
     root.mkdir(parents=True)
     (root / "SKILL.md").write_text("---\nname: probe\ndescription: Repeat a validated procedure.\n---\n# Probe\nStep 1.\n")
@@ -249,7 +249,7 @@ def test_support_file_labels_normalize_windows_separators(review, skill_owner, m
     """Exercise label comparison with Windows-style relative paths on any OS."""
     from pathlib import PureWindowsPath
 
-    wa, jobs, home = review
+    wa, jobs, _home = review
     original = Path.relative_to
 
     def windows_relative(path, *args, **kwargs):
@@ -266,7 +266,7 @@ def test_support_file_labels_normalize_windows_separators(review, skill_owner, m
 
 @pytest.mark.parametrize("stale", [False, True])
 def test_multifile_skill_batch_review(review, skill_owner, monkeypatch, stale):
-    wa, jobs, home = review
+    wa, jobs, _home = review
     from tools.skill_manager_tool import skill_manage
     def decide(context, config):
         assert context["files"]["probe/references/check.md"]["text"] == "Check old behavior"
@@ -287,7 +287,7 @@ def test_multifile_skill_batch_review(review, skill_owner, monkeypatch, stale):
 
 
 def test_skill_batch_validation_rolls_back(review, skill_owner, monkeypatch):
-    wa, jobs, home = review
+    wa, jobs, _home = review
     from tools.skill_manager_tool import skill_manage
     monkeypatch.setattr(wa, "_review_call", lambda *a: answer())
     before = (skill_owner / "SKILL.md").read_text()
@@ -302,7 +302,7 @@ def test_skill_batch_validation_rolls_back(review, skill_owner, monkeypatch):
 
 
 def test_single_skill_and_batch_default_name_preserve_exact_payload(review, skill_owner, monkeypatch):
-    wa, jobs, home = review
+    wa, jobs, _home = review
     from tools.skill_manager_tool import skill_manage
     monkeypatch.setattr(wa, "_review_call", lambda *a: answer())
     with wa.review_evidence([{"role": "user", "content": "Validated defect: Step 1 must be Step 2."}]):
@@ -319,10 +319,51 @@ def test_single_skill_and_batch_default_name_preserve_exact_payload(review, skil
     assert "Step 3." in (skill_owner / "SKILL.md").read_text()
 
 
+@pytest.mark.platforms("posix")
+def test_review_records_and_terminal_receipts_are_private(review):
+    import stat
+
+    wa, _jobs, _home = review
+    result = staged_memory(wa)
+    record = wa.get_pending("memory", result["pending_id"])
+    path = wa._pending_path("memory", record["id"])
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    path.chmod(0o644)
+    wa._save_record(record)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    wa._finish_review(record, "reject", "Fixture rejection")
+    receipt = path.parent / "receipts" / path.name
+    assert not path.exists()
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
+
+
+def test_span_patch_joins_durable_write_serialization(review, monkeypatch):
+    from contextlib import contextmanager
+    from tools.memory_tool import MemoryStore
+
+    wa, _, home = review
+    store = MemoryStore()
+    assert store.add("user", "Prefers concise replies.")["success"]
+    entered = []
+    original_lock = wa.durable_write_lock
+
+    @contextmanager
+    def observed_lock():
+        with original_lock():
+            entered.append(True)
+            yield
+
+    monkeypatch.setattr(wa, "durable_write_lock", observed_lock)
+    result = store.patch("user", "concise", "detailed")
+    assert result["success"]
+    assert entered == [True]
+    assert (home / "memories/USER.md").read_text() == "Prefers detailed replies."
+
+
 def test_real_oauth_resolver_and_codex_wire_have_one_attempt_no_tools_or_caps(review, monkeypatch):
     from types import SimpleNamespace as NS
     import agent.auxiliary_client as aux
-    wa, jobs, home = review
+    wa, _jobs, _home = review
     result = staged_memory(wa)
     record = wa.get_pending("memory", result["pending_id"])
     created, wire, options = [], [], []
@@ -344,9 +385,9 @@ def test_real_oauth_resolver_and_codex_wire_have_one_attempt_no_tools_or_caps(re
             pass
     monkeypatch.setattr(aux, "OpenAI", Raw)
     monkeypatch.setattr(aux, "_select_pool_entry", lambda *a: (False, None))
-    monkeypatch.setattr(aux, "_read_codex_access_token", lambda: "test-oauth-token")
+    monkeypatch.setattr(aux, "_read_codex_singleton_token", lambda: "test-oauth-token")
     monkeypatch.setattr(aux, "_openai_http_client_kwargs", lambda *a: {})
-    decision, usage = wa._review_call(record["review"]["context"], record["review"]["config"])
+    decision, _usage = wa._review_call(record["review"]["context"], record["review"]["config"])
     assert decision["decision"] == "accept"
     assert len(created) == len(wire) == 1
     assert created[0]["api_key"] == "test-oauth-token"
@@ -355,7 +396,7 @@ def test_real_oauth_resolver_and_codex_wire_have_one_attempt_no_tools_or_caps(re
     assert wire[0]["model"] == "gpt-6-astra"
     assert not ({"tools", "max_tokens", "max_output_tokens", "max_completion_tokens"} & wire[0].keys())
     # OAuth absent must not try the main model or API credentials.
-    monkeypatch.setattr(aux, "_read_codex_access_token", lambda: None)
+    monkeypatch.setattr(aux, "_read_codex_singleton_token", lambda: None)
     with pytest.raises(ValueError, match="OAuth"):
         wa._review_call(record["review"]["context"], record["review"]["config"])
     assert len(created) == len(wire) == 1
@@ -369,7 +410,7 @@ def test_real_oauth_resolver_and_codex_wire_have_one_attempt_no_tools_or_caps(re
     '{"decision":"accept","reason":"yes","evidence":["source:0"],"rewrite":"new"}',
 ])
 def test_strict_parser_rejects_unbound_decisions(review, raw):
-    wa, jobs, home = review
+    wa, _jobs, _home = review
     result = staged_memory(wa)
     context = wa.get_pending("memory", result["pending_id"])["review"]["context"]
     with pytest.raises(ValueError):
@@ -380,7 +421,7 @@ def test_competing_processes_only_call_and_apply_once(review):
     import os
     import subprocess
     import sys
-    wa, jobs, home = review
+    wa, _jobs, home = review
     result = staged_memory(wa)
     code = '''
 import sys
@@ -398,7 +439,7 @@ wa._process_review("memory", sys.argv[2], home)
                                   env=dict(os.environ), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                  for _ in range(2)]
     for process in processes:
-        stdout, stderr = process.communicate(timeout=20)
+        _stdout, stderr = process.communicate(timeout=20)
         assert process.returncode == 0, stderr.decode()
     assert (home / "calls").read_text().splitlines() == ["call"]
     assert (home / "memories/USER.md").read_text().count("Prefers concise replies.") == 1
@@ -460,13 +501,13 @@ def test_actual_dispatchers_capture_original_evidence(review, skill_owner, monke
     from tools.memory_tool import MemoryStore
     from agent.agent_runtime_helpers import invoke_tool
     from agent.tool_executor import execute_tool_calls_sequential, execute_tool_calls_concurrent
-    wa, jobs, home = review
+    wa, jobs, _home = review
     with (
-        patch("run_agent.get_tool_definitions", return_value=[
+        patch("model_tools.get_tool_definitions", return_value=[
             {"type": "function", "function": {"name": tool, "description": "Test",
              "parameters": {"type": "object", "properties": {}}}}]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(api_key=FAKE_AUTH, base_url="https://example.invalid/v1", provider="custom",
@@ -507,7 +548,7 @@ def test_actual_dispatchers_capture_original_evidence(review, skill_owner, monke
 
 def test_background_candidate_prompt_is_not_original_evidence(review):
     from types import SimpleNamespace
-    wa, jobs, home = review
+    wa, _jobs, _home = review
     @wa.capture_review_evidence
     def invocation(agent, messages):
         from tools.memory_tool import memory_tool, MemoryStore
@@ -525,7 +566,7 @@ def test_background_skill_apply_preserves_read_and_ownership_guards(review, skil
     import contextvars
     from tools.skill_provenance import set_current_write_origin
     from tools import skill_manager_tool as sm, skill_manager_guards as guards, skill_usage
-    wa, jobs, home = review
+    wa, jobs, _home = review
     skill_usage.mark_agent_created("probe")
     monkeypatch.setattr(wa, "_review_call", lambda *a: answer())
     def propose_background():
@@ -551,7 +592,7 @@ def test_background_skill_apply_preserves_read_and_ownership_guards(review, skil
 
 
 def test_candidate_tool_echoes_are_not_independent_evidence(review):
-    wa, jobs, home = review
+    wa, _jobs, _home = review
     from tools.memory_tool import memory_tool, MemoryStore
     messages = [
         {"role": "user", "content": "Inspect the problem."},
@@ -572,7 +613,7 @@ def test_candidate_tool_echoes_are_not_independent_evidence(review):
 @pytest.mark.parametrize("kind", ["provider", "blank_model", "model_alias", "invalid_enabled", "input_limit"])
 def test_invalid_reviewer_configuration_cannot_fall_back(review, kind):
     from hermes_cli.config import load_config, save_config
-    wa, jobs, home = review
+    wa, jobs, _home = review
     cfg = load_config()
     key, value = {
         "provider": ("provider", "openai"), "blank_model": ("model", ""),
@@ -603,7 +644,7 @@ def test_symlinked_home_defers_with_explicit_reason(review, monkeypatch):
 def test_oauth_route_refuses_non_codex_endpoint_before_call(review, monkeypatch):
     from types import SimpleNamespace as NS
     import agent.auxiliary_client as aux
-    wa, jobs, home = review
+    wa, _jobs, _home = review
     result = staged_memory(wa)
     record = wa.get_pending("memory", result["pending_id"])
     raw = NS(api_key=FAKE_AUTH, base_url="https://api.openai.com/v1")
@@ -616,7 +657,7 @@ def test_oauth_route_refuses_non_codex_endpoint_before_call(review, monkeypatch)
 def test_exception_after_apply_keeps_uncertain_fence(review, monkeypatch):
     from tools import memory_tool as mt
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    wa, jobs, home = review
+    wa, jobs, _home = review
     monkeypatch.setattr(wa, "_review_call", lambda *a: answer())
     real_apply = mt.apply_memory_pending
     def fail_after_write(payload, store):
@@ -658,7 +699,7 @@ def test_human_prompt_does_not_hold_write_lock(review):
     from hermes_cli.config import load_config, save_config
     from tools.memory_tool import MemoryStore, memory_tool
     from tools.terminal_tool import set_approval_callback
-    wa, jobs, home = review
+    _wa, _jobs, _home = review
     cfg = load_config()
     cfg["durable_write_review"]["enabled"] = False
     cfg["memory"]["write_approval"] = True
@@ -688,7 +729,7 @@ def test_human_prompt_does_not_hold_write_lock(review):
 
 def test_missing_affected_skill_file_defers_before_model_call(review, skill_owner):
     from tools.skill_manager_tool import skill_manage
-    wa, jobs, home = review
+    wa, jobs, _home = review
     with wa.review_evidence([{"role": "user", "content": "Fix the demonstrated defect in the supporting file."}]):
         result = json.loads(skill_manage(action="patch", name="probe", file_path="references/missing.md",
                                         old_string="old", new_string="new"))

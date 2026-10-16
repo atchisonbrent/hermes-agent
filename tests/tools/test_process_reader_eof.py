@@ -59,7 +59,6 @@ def test_wait_failure_without_exit_evidence_is_not_completion(monkeypatch, poll_
     def poll():
         if poll_raises:
             raise OSError('synthetic poll failure')
-        return None
 
     process = SimpleNamespace(stdout=io.StringIO(''), returncode=None,
                               wait=failed_wait, poll=poll)

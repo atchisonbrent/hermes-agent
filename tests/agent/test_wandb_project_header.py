@@ -14,7 +14,7 @@ WANDB_URL = "https://api.inference.wandb.ai/v1"
 EXPECTED = "cw-wb/storage"
 
 
-@patch("run_agent.OpenAI")
+@patch("agent.process_bootstrap.OpenAI")
 def test_main_wandb_client_always_has_project_header(mock_openai):
     mock_openai.return_value = MagicMock()
     with patch("hermes_cli.config.load_config", return_value={}):

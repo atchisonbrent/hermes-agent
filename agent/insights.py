@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
 from hermes_cli.timefmt import coerce_epoch
 from hermes_time import safe_strftime
+import itertools
 
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 _SKILL_TOOLS = {"skill_view", "skill_manage"}
@@ -27,7 +28,7 @@ def _fmt_est_cost(est_cost: float) -> str:
     return format_cost_label(Decimal(str(est_cost)))
 
 
-def _estimate_cost(session_or_model: Dict[str, Any] | str, input_tokens: int = 0, output_tokens: int = 0, *, cache_read_tokens: int = 0,
+def _estimate_cost(session_or_model: dict[str, Any] | str, input_tokens: int = 0, output_tokens: int = 0, *, cache_read_tokens: int = 0,
                    cache_write_tokens: int = 0, provider: Optional[str] = None, base_url: Optional[str] = None) -> tuple[float, str]:
     """Estimate the USD cost for a session row or a model/token tuple."""
     if isinstance(session_or_model, dict):
@@ -42,7 +43,7 @@ def _estimate_cost(session_or_model: Dict[str, Any] | str, input_tokens: int = 0
     return float(result.amount_usd or 0.0), result.status
 
 
-def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
+def _bar_chart(values: list[int], max_width: int = 20) -> list[str]:
     peak = max(values) if values else 1
     return ["" for _ in values] if peak == 0 else ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
 
@@ -176,7 +177,7 @@ class InsightsEngine:
         sql, params = (getattr(self, base + "_WITH_SOURCE"), (cutoff, source)) if source else (getattr(self, base + "_ALL"), (cutoff,))
         return self._conn.execute(sql, params).fetchall()
 
-    def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+    def generate(self, days: int = 30, source: str | None = None) -> dict[str, Any]:
         """Generate a complete insights report for the last ``days`` days, optionally filtered by source platform."""
         cutoff = time.time() - (days * 86400)
         # Drain the SessionDB's async accounting queue so counters are exact
@@ -205,7 +206,7 @@ class InsightsEngine:
 
     def get_model_usage_breakdown(
         self, cutoff: float, source: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Return one-snapshot, fully reconciled usage for dashboard consumers.
 
         ``session_ids`` is the exact source population. Each model and daily row
@@ -239,138 +240,140 @@ class InsightsEngine:
         # transaction under its lock so a concurrent write cannot begin inside
         # our snapshot (or have its transaction rolled back by this reader).
         with getattr(self.db, "_lock", nullcontext()):
-            return self._model_usage_snapshot(cutoff, source)
+            started_snapshot = not self._conn.in_transaction
+            if started_snapshot:
+                self._conn.execute("BEGIN")
+            try:
+                sessions = self._get_usage_sessions(cutoff, source)
+                usage_rows = self._get_model_usage(cutoff, source)
+            finally:
+                if started_snapshot:
+                    self._conn.rollback()
+        return self._model_usage_snapshot(
+            cutoff, source, sessions=sessions, usage_rows=usage_rows,
+        )
 
-    def _model_usage_snapshot(self, cutoff: float, source: Optional[str]) -> Dict[str, Any]:
-        """Read a snapshot while the caller owns the shared connection lock."""
-        started_snapshot = not self._conn.in_transaction
-        if started_snapshot:
-            self._conn.execute("BEGIN")
-        try:
-            sessions = self._get_usage_sessions(cutoff, source)
-            usage_rows = self._get_model_usage(cutoff, source)
-            models = self._compute_model_breakdown(
-                sessions,
+    def _model_usage_snapshot(self, cutoff, source, *, sessions, usage_rows) -> dict[str, Any]:
+        """Compute pricing from materialized rows without holding the DB lock."""
+        models = self._compute_model_breakdown(
+            sessions,
+            cutoff,
+            source,
+            usage_rows=usage_rows,
+            include_session_ids=True,
+        )
+        model_by_name = {row["model"]: row for row in models}
+        modeled_session_ids = {
+            session_id
+            for row in models
+            for session_id in row.get("session_ids", [])
+        }
+        for session in sessions:
+            session_id = str(session["id"])
+            if session_id in modeled_session_ids:
+                continue
+            model = session.get("model") or "unknown"
+            display_model = _short_model(model)
+            row = model_by_name.get(display_model)
+            if row is None:
+                row = {
+                    "model": display_model,
+                    "sessions": 0,
+                    "session_ids": [],
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "total_tokens": 0,
+                    "api_calls": 0,
+                    "tool_calls": 0,
+                    "cost": 0.0,
+                    "actual_cost": 0.0,
+                    "has_pricing": has_known_pricing(
+                        model,
+                        session.get("billing_provider") or None,
+                        session.get("billing_base_url"),
+                    ),
+                    "cost_status": session.get("cost_status") or "unknown",
+                }
+                models.append(row)
+                model_by_name[display_model] = row
+            row["session_ids"].append(session_id)
+            row["session_ids"].sort()
+            row["sessions"] = len(row["session_ids"])
+
+        sessions_by_day: dict[str, list[dict]] = defaultdict(list)
+        for session in sessions:
+            started_at = session["started_at"]
+            day = "?" if started_at is None else time.strftime(
+                "%Y-%m-%d", time.localtime(started_at)
+            )
+            sessions_by_day[day].append(session)
+
+        usage_by_session: dict[str, list[dict]] = defaultdict(list)
+        for row in usage_rows:
+            session_id = row.get("session_id")
+            if session_id is not None:
+                usage_by_session[str(session_id)].append(row)
+
+        daily = []
+        total_keys = (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "total_tokens",
+            "cost",
+            "actual_cost",
+        )
+        for day, day_sessions in sorted(sessions_by_day.items()):
+            day_ids = {str(session["id"]) for session in day_sessions}
+            day_usage = [
+                row
+                for session_id in day_ids
+                for row in usage_by_session.get(session_id, [])
+            ]
+            day_models = self._compute_model_breakdown(
+                day_sessions,
                 cutoff,
                 source,
-                usage_rows=usage_rows,
-                include_session_ids=True,
+                usage_rows=day_usage,
             )
-            model_by_name = {row["model"]: row for row in models}
-            modeled_session_ids = {
-                session_id
-                for row in models
-                for session_id in row.get("session_ids", [])
+            day_row = {
+                "date": day,
+                "session_ids": sorted(day_ids),
+                "sessions": len(day_ids),
             }
-            for session in sessions:
-                session_id = str(session["id"])
-                if session_id in modeled_session_ids:
-                    continue
-                model = session.get("model") or "unknown"
-                display_model = model.split("/")[-1] if "/" in model else model
-                row = model_by_name.get(display_model)
-                if row is None:
-                    row = {
-                        "model": display_model,
-                        "sessions": 0,
-                        "session_ids": [],
-                        "input_tokens": 0,
-                        "output_tokens": 0,
-                        "cache_read_tokens": 0,
-                        "cache_write_tokens": 0,
-                        "reasoning_tokens": 0,
-                        "total_tokens": 0,
-                        "api_calls": 0,
-                        "tool_calls": 0,
-                        "cost": 0.0,
-                        "actual_cost": 0.0,
-                        "has_pricing": has_known_pricing(
-                            model,
-                            session.get("billing_provider") or None,
-                            session.get("billing_base_url"),
-                        ),
-                        "cost_status": session.get("cost_status") or "unknown",
-                    }
-                    models.append(row)
-                    model_by_name[display_model] = row
-                row["session_ids"].append(session_id)
-                row["session_ids"].sort()
-                row["sessions"] = len(row["session_ids"])
+            for key in total_keys:
+                day_row[key] = sum(row.get(key) or 0 for row in day_models)
+            daily.append(day_row)
 
-            sessions_by_day: Dict[str, List[Dict]] = defaultdict(list)
-            for session in sessions:
-                started_at = session["started_at"]
-                day = "?" if started_at is None else time.strftime(
-                    "%Y-%m-%d", time.localtime(started_at)
-                )
-                sessions_by_day[day].append(session)
-
-            usage_by_session: Dict[str, List[Dict]] = defaultdict(list)
-            for row in usage_rows:
-                session_id = row.get("session_id")
-                if session_id is not None:
-                    usage_by_session[str(session_id)].append(row)
-
-            daily = []
-            total_keys = (
-                "input_tokens",
-                "output_tokens",
-                "cache_read_tokens",
-                "cache_write_tokens",
-                "reasoning_tokens",
-                "total_tokens",
-                "cost",
-                "actual_cost",
-            )
-            for day, day_sessions in sorted(sessions_by_day.items()):
-                day_ids = {str(session["id"]) for session in day_sessions}
-                day_usage = [
-                    row
-                    for session_id in day_ids
-                    for row in usage_by_session.get(session_id, [])
-                ]
-                day_models = self._compute_model_breakdown(
-                    day_sessions,
-                    cutoff,
-                    source,
-                    usage_rows=day_usage,
-                )
-                day_row = {
-                    "date": day,
-                    "session_ids": sorted(day_ids),
-                    "sessions": len(day_ids),
+        totals = {
+            key: sum(row.get(key) or 0 for row in models)
+            for key in total_keys
+        }
+        return {
+            "cutoff": cutoff,
+            "source_filter": source,
+            "generated_at": time.time(),
+            "session_ids": sorted(str(s["id"]) for s in sessions),
+            "ledger_session_ids": sorted(
+                {
+                    str(row["session_id"])
+                    for row in usage_rows
+                    if row.get("session_id") is not None
                 }
-                for key in total_keys:
-                    day_row[key] = sum(row.get(key) or 0 for row in day_models)
-                daily.append(day_row)
-
-            totals = {
-                key: sum(row.get(key) or 0 for row in models)
-                for key in total_keys
-            }
-            return {
-                "cutoff": cutoff,
-                "source_filter": source,
-                "generated_at": time.time(),
-                "session_ids": sorted(str(s["id"]) for s in sessions),
-                "ledger_session_ids": sorted(
-                    {
-                        str(row["session_id"])
-                        for row in usage_rows
-                        if row.get("session_id") is not None
-                    }
-                ),
-                "totals": totals,
-                "daily": daily,
-                "models": models,
-            }
-        finally:
-            if started_snapshot:
-                self._conn.rollback()
+            ),
+            "totals": totals,
+            "daily": daily,
+            "models": models,
+        }
 
     def _get_usage_sessions(
         self, cutoff: float, source: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Fetch sessions whose start or end falls at or after the cutoff."""
         if source:
             cursor = self._conn.execute(
@@ -386,7 +389,7 @@ class InsightsEngine:
                 row[col] = coerce_epoch(row.get(col), session_id=row.get("id"), field=col)
         return rows
 
-    def get_usage_breakdown(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+    def get_usage_breakdown(self, days: int = 30, source: str | None = None) -> dict[str, Any]:
         """Analytics-usage payload (tools + skills) without a full generate(); the
         instr()-prefiltered skill query loads only skill_view/skill_manage messages."""
         cutoff = time.time() - (days * 86400)
@@ -395,7 +398,7 @@ class InsightsEngine:
 
     # ------------------------------------------------------------------ SQL
 
-    def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
+    def _get_sessions(self, cutoff: float, source: str | None = None) -> list[dict]:
         # Coerce the two epoch columns once at load: one corrupt/TEXT cell must degrade to "unknown"
         # for that session, never abort the whole report (#99959).
         rows = [dict(row) for row in self._query("_GET_SESSIONS", cutoff, source)]
@@ -404,7 +407,7 @@ class InsightsEngine:
                 row[col] = coerce_epoch(row.get(col), session_id=row.get("id"), field=col)
         return rows
 
-    def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+    def _get_tool_usage(self, cutoff: float, source: str | None = None) -> list[dict]:
         """Tool call counts from two sources: ``tool_name`` on 'tool' rows (set
         by the gateway) and ``tool_calls`` JSON on assistant rows (covers CLI,
         where tool_name is not populated). The two views are reconciled PER
@@ -426,9 +429,9 @@ class InsightsEngine:
             tool_counts[key[1]] += max(by_session_tool.get(key, 0), calls_by_session_tool.get(key, 0))
         return [{"tool_name": name, "count": count} for name, count in tool_counts.most_common()]
 
-    def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+    def _get_skill_usage(self, cutoff: float, source: str | None = None) -> list[dict]:
         """Extract per-skill usage from assistant tool calls."""
-        skill_counts: Dict[str, Dict[str, Any]] = {}
+        skill_counts: dict[str, dict[str, Any]] = {}
         for row in self._query("_GET_SKILL_CALLS", cutoff, source):
             timestamp = row["timestamp"]
             for func in _iter_functions(row["tool_calls"]):
@@ -444,11 +447,11 @@ class InsightsEngine:
                     entry["last_used_at"] = timestamp
         return list(skill_counts.values())
 
-    def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
+    def _get_message_stats(self, cutoff: float, source: str | None = None) -> dict:
         rows = self._query("_GET_MESSAGE_STATS", cutoff, source)
         return dict(rows[0]) if rows else {"total_messages": 0, "user_messages": 0, "assistant_messages": 0, "tool_messages": 0}
 
-    def _get_model_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+    def _get_model_usage(self, cutoff: float, source: str | None = None) -> list[dict]:
         """Per-model usage rows; [] when the table is missing (older DB) so the caller falls back to the per-session aggregate."""
         try:
             return [dict(row) for row in self._query("_GET_MODEL_USAGE", cutoff, source)]
@@ -457,7 +460,7 @@ class InsightsEngine:
 
     # -------------------------------------------------------------- Compute
 
-    def _compute_overview(self, sessions: List[Dict], message_stats: Dict, models: Optional[List[Dict]] = None) -> Dict:
+    def _compute_overview(self, sessions: list[dict], message_stats: dict, models: Optional[list[dict]] = None) -> dict:
         # Per-model breakdown includes auxiliary usage rows (vision/compression/
         # titles) plus reconciled residuals, while session counters carry
         # main-loop usage only — sum the breakdown when available so overview
@@ -505,9 +508,9 @@ class InsightsEngine:
         }
 
     def _compute_model_breakdown(
-        self, sessions: List[Dict], cutoff: float, source: Optional[str] = None,
-        *, usage_rows: Optional[List[Dict]] = None, include_session_ids: bool = False,
-    ) -> List[Dict]:
+        self, sessions: list[dict], cutoff: float, source: Optional[str] = None,
+        *, usage_rows: Optional[list[dict]] = None, include_session_ids: bool = False,
+    ) -> list[dict]:
         """Tokens/cost per model from session_model_usage, so a session that
         switched models via ``/model`` splits across every model it used.
         Sessions without per-model rows (pre-table data) fall back to their
@@ -517,10 +520,10 @@ class InsightsEngine:
         model_data = defaultdict(lambda: {"sessions": set(), **dict.fromkeys(_TOKEN_KEYS, 0), "reasoning_tokens": 0, "total_tokens": 0,
                                           "api_calls": 0, "tool_calls": 0, "cost": 0.0, "actual_cost": 0.0})
 
-        def _accumulate(model, provider, base_url, session_id, counts: Dict[str, int], *,
+        def _accumulate(model, provider, base_url, session_id, counts: dict[str, int], *,
                         stored_cost=None, actual_cost=None, cost_status=None):
             model = model or "unknown"
-            d: Dict[str, Any] = model_data[_short_model(model)]
+            d: dict[str, Any] = model_data[_short_model(model)]
             d["sessions"].add(session_id)
             for key in _TOKEN_KEYS + ("reasoning_tokens",):
                 d[key] += counts[key]
@@ -539,7 +542,7 @@ class InsightsEngine:
         if usage_rows is None:
             usage_rows = self._get_model_usage(cutoff, source)
         for r in usage_rows:
-            totals: Dict[str, Any] = usage_totals[r["session_id"]]
+            totals: dict[str, Any] = usage_totals[r["session_id"]]
             counts = {key: r[key] or 0 for key in count_keys}
             for key in count_keys:
                 totals[key] += counts[key]
@@ -575,7 +578,7 @@ class InsightsEngine:
             result.append(entry)
         return sorted(result, key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
 
-    def _compute_platform_breakdown(self, sessions: List[Dict]) -> List[Dict]:
+    def _compute_platform_breakdown(self, sessions: list[dict]) -> list[dict]:
         platform_data = defaultdict(lambda: {"sessions": 0, "messages": 0, **dict.fromkeys(_TOKEN_KEYS, 0), "total_tokens": 0, "tool_calls": 0})
         for s in sessions:
             d = platform_data[s.get("source") or "unknown"]
@@ -587,12 +590,12 @@ class InsightsEngine:
             d["tool_calls"] += s.get("tool_call_count") or 0
         return sorted(({"platform": platform, **data} for platform, data in platform_data.items()), key=lambda x: x["sessions"], reverse=True)
 
-    def _compute_tool_breakdown(self, tool_usage: List[Dict]) -> List[Dict]:
+    def _compute_tool_breakdown(self, tool_usage: list[dict]) -> list[dict]:
         """Ranked tool list with percentages."""
         total_calls = sum(t["count"] for t in tool_usage)
         return [{"tool": t["tool_name"], "count": t["count"], "percentage": (t["count"] / total_calls * 100) if total_calls else 0} for t in tool_usage]
 
-    def _compute_skill_breakdown(self, skill_usage: List[Dict]) -> Dict[str, Any]:
+    def _compute_skill_breakdown(self, skill_usage: list[dict]) -> dict[str, Any]:
         """Per-skill usage → summary + ranked list."""
         total_skill_loads = sum(s["view_count"] for s in skill_usage)
         total_skill_edits = sum(s["manage_count"] for s in skill_usage)
@@ -608,7 +611,7 @@ class InsightsEngine:
             "top_skills": top_skills,
         }
 
-    def _compute_activity_patterns(self, sessions: List[Dict]) -> Dict:
+    def _compute_activity_patterns(self, sessions: list[dict]) -> dict:
         """Activity by day of week, hour, and active-day streak."""
         day_counts, hour_counts, daily_counts = Counter(), Counter(), Counter()  # weekday (0=Monday), hour, "YYYY-MM-DD"
         for s in sessions:
@@ -626,7 +629,7 @@ class InsightsEngine:
         if daily_counts:
             dates = [datetime.strptime(d, "%Y-%m-%d") for d in sorted(daily_counts)]
             current_streak = max_streak = 1
-            for prev, cur in zip(dates, dates[1:]):
+            for prev, cur in itertools.pairwise(dates):
                 current_streak = current_streak + 1 if (cur - prev).days == 1 else 1
                 max_streak = max(max_streak, current_streak)
         return {"by_day": day_breakdown, "by_hour": hour_breakdown, "busiest_day": max(day_breakdown, key=lambda x: x["count"]),
@@ -638,7 +641,7 @@ class InsightsEngine:
         ("Most tool calls", lambda s: s.get("tool_call_count") or 0, "{} calls"),
     )
 
-    def _compute_top_sessions(self, sessions: List[Dict]) -> List[Dict]:
+    def _compute_top_sessions(self, sessions: list[dict]) -> list[dict]:
         """Notable sessions (longest, most messages, most tokens, most tool calls)."""
         top = []
         timed = [s for s in sessions if s.get("started_at") and s.get("ended_at")]
@@ -656,11 +659,11 @@ class InsightsEngine:
     # ------------------------------------------------------------- Formatting
 
     @staticmethod
-    def _section(title: str) -> List[str]:
+    def _section(title: str) -> list[str]:
         return [f"  {title}", "  " + "─" * 56]
 
     @staticmethod
-    def _cost_lines(o: Dict, templates: tuple) -> List[str]:
+    def _cost_lines(o: dict, templates: tuple) -> list[str]:
         """One formatted line per non-zero cost bucket (estimated, included, unknown)."""
         # Cost breakdown — surface the three buckets so subscription-included and unknown-cost sessions are
         # visible instead of silently collapsing to $0. See #77223.
@@ -668,7 +671,7 @@ class InsightsEngine:
         values = (_fmt_est_cost(est_cost) if est_cost > 0 else "", o.get("included_cost_sessions", 0), o.get("unknown_cost_sessions", 0))
         return [tpl.format(v) for tpl, v in zip(templates, values) if v]
 
-    def format_terminal(self, report: Dict) -> str:
+    def format_terminal(self, report: dict) -> str:
         """Format the insights report for terminal display (CLI)."""
         if report.get("empty"):
             src = f" (source: {report['source_filter']})" if report.get("source_filter") else ""
@@ -747,7 +750,7 @@ class InsightsEngine:
             lines += [f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})" for ts in report["top_sessions"]] + [""]
         return "\n".join(lines)
 
-    def format_gateway(self, report: Dict) -> str:
+    def format_gateway(self, report: dict) -> str:
         """Format the insights report for gateway/messaging (shorter)."""
         if report.get("empty"):
             return f"No sessions found in the last {report.get('days', 30)} days."
