@@ -49,11 +49,25 @@ _CROSS_ISSUER_WARN_EMITTED = False
 
 
 def _wire_model_identity(model: Any) -> Optional[str]:
-    """Canonical Responses wire model stamped on encrypted reasoning: blobs are sealed to the issuing
-    model too, so a same-endpoint model switch must not replay them (HTTP 400)."""
+    """Canonical Responses wire model sent to the provider."""
     from agent.model_metadata import strip_codex_context_variant_suffix
 
     return str(strip_codex_context_variant_suffix(model or "")).strip() or None
+
+
+def _reasoning_model_identity(model: Any) -> Optional[str]:
+    """Logical model/access identity stamped on encrypted reasoning.
+
+    Standard and Daybreak requests share a wire slug but not necessarily an encryption or policy
+    domain. Keep them distinct so a mid-session switch cannot replay an opaque blob across modes.
+    """
+    wire_model = _wire_model_identity(model)
+    if wire_model is None:
+        return None
+    from agent.codex_model_variants import codex_access_program_for_model
+
+    access_program = codex_access_program_for_model(model)
+    return f"{wire_model}#access_program={access_program}" if access_program else wire_model
 
 
 # api.openai.com model families that accept ``reasoning.context: "all_turns"`` and honour a reasoning blob
@@ -777,7 +791,7 @@ def _native_responses_replay_items(
             messages, is_xai_responses=route["is_xai_responses"], is_github_responses=route["is_github_responses"],
             replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
             current_issuer_kind=_classify_responses_issuer(base_url=getattr(agent, "base_url", None), **route),
-            current_issuer_model=_wire_model_identity(effective_model),
+            current_issuer_model=_reasoning_model_identity(effective_model),
             native_compaction_eligible=True,
         )
     except Exception:

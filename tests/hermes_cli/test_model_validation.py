@@ -529,6 +529,56 @@ class TestValidateCodex900kVariants:
         assert result["persist"] is False
         assert "272K" in result["message"]
 
+    def test_daybreak_suffix_cannot_bypass_ineligible_900k_rejection(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model("gpt-5.5-900k-daybreak-blue", "openai-codex")
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert "272K" in result["message"]
+
+    def test_daybreak_suffix_must_follow_900k_suffix(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model("gpt-6-sol-daybreak-blue-900k", "openai-codex")
+        assert result["accepted"] is False
+        assert "suffix order" in result["message"]
+
+    @pytest.mark.parametrize("model", [
+        "gpt-daybreak-blue-latest-900k",
+        "openai/gpt-daybreak-blue-latest-900k",
+    ])
+    def test_legacy_daybreak_900k_route_is_not_mistaken_for_suffix_order(self, model):
+        catalog = [*self._CATALOG, "gpt-daybreak-blue-latest-900k"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=catalog):
+            result = validate_requested_model(model, "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    def test_unlisted_daybreak_900k_route_is_not_recognized_as_entitled(self):
+        catalog = [*self._CATALOG, "gpt-5.4"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=catalog):
+            result = validate_requested_model("gpt-5.4-900k-daybreak-blue", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is False
+        assert "Daybreak" in result["message"]
+
+    def test_foreign_family_daybreak_route_is_rejected(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model("qwen3.5-4b-daybreak-blue", "openai-codex")
+        assert result["accepted"] is False
+
+    def test_namespaced_listed_daybreak_route_is_recognized(self):
+        catalog = [*self._CATALOG, "gpt-6-sol-daybreak-blue", "gpt-6-sol-900k-daybreak-blue"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=catalog):
+            base = validate_requested_model("openai/GPT-6-SOL-daybreak-blue", "openai-codex")
+            context = validate_requested_model("openai/GPT-6-SOL-900K-daybreak-blue", "openai-codex")
+        assert base["accepted"] is True and base["recognized"] is True
+        assert context["accepted"] is True and context["recognized"] is True
+
+    def test_foreign_namespace_non_blue_route_is_rejected(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model("qwen/gpt-5.4", "openai-codex")
+        assert result["accepted"] is False
+
     def test_valid_variant_missing_from_catalog_still_accepted(self):
         """A verified variant not yet in the (possibly stale) catalog is
         accepted via the eligibility predicate, not the soft-accept."""

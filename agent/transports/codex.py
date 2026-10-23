@@ -632,6 +632,7 @@ class ResponsesApiTransport(ProviderTransport):
     # Issuer kind of the most recent build_kwargs/convert_messages call (normalize_response fallback).
     _last_issuer_kind: Optional[str] = None
     _last_issuer_model: Optional[str] = None
+    _last_wire_model: Optional[str] = None
     # ``{wire_alias: original}`` of the most recent build_kwargs. None = no request built (legacy map).
     _last_wire_aliases: Optional[dict[str, str]] = None
     # Wire models that 400'd on ``reasoning.context`` this session (the transport is cached per agent).
@@ -646,9 +647,9 @@ class ResponsesApiTransport(ProviderTransport):
             "reasoning.context" in text or "all_turns" in text
         ):
             return False
-        self._all_turns_rejected = self._all_turns_rejected | {self._last_issuer_model}
+        self._all_turns_rejected = self._all_turns_rejected | {self._last_wire_model}
         self._last_sent_all_turns = False
-        logger.warning("reasoning.context rejected by %s; omitting it for this session", self._last_issuer_model)
+        logger.warning("reasoning.context rejected by %s; omitting it for this session", self._last_wire_model)
         return True
 
     def drop_unverified_replay(self, *message_lists: Any) -> int:
@@ -683,9 +684,14 @@ class ResponsesApiTransport(ProviderTransport):
 
     def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input, _wire_model_identity
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input,
+            _reasoning_model_identity,
+            _wire_model_identity,
+        )
 
-        self._last_issuer_model = _wire_model_identity(kwargs.get("model"))
+        self._last_issuer_model = _reasoning_model_identity(kwargs.get("identity_model", kwargs.get("model")))
+        self._last_wire_model = _wire_model_identity(kwargs.get("model"))
         return _chat_messages_to_responses_input(
             messages, is_xai_responses=kwargs.get("is_xai_responses") is True,
             is_github_responses=kwargs.get("is_github_responses") is True,
@@ -756,18 +762,26 @@ class ResponsesApiTransport(ProviderTransport):
         )
 
         # Lazy: provider plugins import this transport during model_metadata init.
-        from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
+        from agent.codex_model_variants import validate_codex_access_route
+        from agent.codex_responses_adapter import _wire_model_identity
         request_overrides = params.get("request_overrides") or {}
-        # An override may rewrite the wire model; provenance must be stamped with what actually goes out.
-        wire_model = _strip_ctx_variant(request_overrides.get("model", model))
+        # An override may rewrite the wire model; logical provenance also includes its access program.
+        selected_model = request_overrides.get("model", model)
+        access_program = validate_codex_access_route(
+            model, selected_model, model_overridden="model" in request_overrides,
+            is_codex_backend=is_codex_backend,
+        )
+        wire_model = _wire_model_identity(selected_model) or ""
         kwargs = {
-            # ``-900k`` picker variants are Hermes-side aliases; the backend knows only the base slug.
+            # ``-900k`` and ``-daybreak-blue`` picker variants are Hermes-side aliases; the backend
+            # knows the base slug and receives the access program separately below.
             "model": wire_model,
             "instructions": instructions,
             "input": self.convert_messages(
                 payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
                 is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
+                identity_model=selected_model,
             ),
             "store": False,
         }
@@ -783,7 +797,9 @@ class ResponsesApiTransport(ProviderTransport):
         # Content-addressed (instructions + tools) within a logical scope that survives
         # compression rotation; session_id itself stays untouched for transcript isolation.
         _cache_scope = _cache_scope_from_session_id(params.get("cache_scope_id") or session_id)
-        cache_key = _content_cache_key(instructions, response_tools, _cache_scope) or _cache_scope
+        from agent.codex_model_variants import codex_access_program_cache_identity
+        cache_instructions = codex_access_program_cache_identity(instructions, selected_model)
+        cache_key = _content_cache_key(cache_instructions, response_tools, _cache_scope) or _cache_scope
         # xAI takes prompt_cache_key in extra_body (below); GitHub Models opts out entirely.
         if not is_github_responses and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key
@@ -809,6 +825,11 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
+        if is_codex_backend:
+            from agent.codex_model_variants import reconcile_codex_access_program_extra_body
+            extra_body = reconcile_codex_access_program_extra_body(kwargs.get("extra_body"), access_program)
+            if extra_body is not None:
+                kwargs["extra_body"] = extra_body
 
         # ``prompt_cache_options`` is not a Responses.create() kwarg in the OpenAI SDK, so a
         # top-level copy (e.g. from request_overrides) fails the call with TypeError before any

@@ -98,12 +98,16 @@ def is_astra_model(model: Optional[str]) -> bool:
     """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.
     The single home for the slug set: picker gating, effort vocabulary and the request sanitizer all
     key off it, so a new Astra alias is one edit."""
-    return (model or "").strip().lower().rsplit("/", 1)[-1] in ASTRA_MODEL_IDS
+    from agent.codex_model_variants import strip_codex_access_program_suffix
+
+    return strip_codex_access_program_suffix(model).lower().rsplit("/", 1)[-1] in ASTRA_MODEL_IDS
 
 
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
-    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    from agent.codex_model_variants import strip_codex_access_program_suffix
+
+    bare = strip_codex_access_program_suffix(model).lower().rsplit("/", 1)[-1]
     if is_astra_model(model) or bare.startswith(NO_DISABLE_TIER_PREFIXES):
         return CODEX_ASTRA_EFFORTS
     return (

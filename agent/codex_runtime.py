@@ -549,12 +549,20 @@ def _codex_model_provider(agent) -> str | None:
 
 
 def _codex_wire_model(agent, model_provider: str | None) -> str | None:
-    """The slug codex should run. ``-900k`` picker variants are Hermes-side aliases the backend rejects
+    """The slug codex should run. Blue access routes are refused because app-server cannot activate them;
+    ``-900k`` picker variants are Hermes-side aliases the backend rejects
     ("not supported when using Codex with a ChatGPT account"); codex applies the catalog's extended window
     to the base slug itself. On codex's own provider the slug is bare (``openai/gpt-5.5`` -> ``gpt-5.5``),
     as for openai-codex; a named custom provider's model ids are its own and pass through."""
+    selected_model = getattr(agent, "model", None)
+    from agent.codex_model_variants import codex_access_program_for_model
+    if codex_access_program_for_model(selected_model):
+        raise ValueError(
+            "Daybreak Blue routes require the Codex Responses API; codex app-server cannot select "
+            "the access program, so Hermes refuses to run the request as standard mode."
+        )
     from agent.model_metadata import strip_codex_context_variant_suffix
-    model = strip_codex_context_variant_suffix(getattr(agent, "model", None)) or None
+    model = strip_codex_context_variant_suffix(selected_model) or None
     if model and model_provider is None:
         from hermes_cli.model_normalize import normalize_model_for_provider
         model = normalize_model_for_provider(model, "openai-codex")
@@ -732,6 +740,14 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         from agent.conversation_compression import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
+    from agent.codex_model_variants import codex_access_program_for_model
+    if codex_access_program_for_model(getattr(agent, "model", None)):
+        message = ("Daybreak Blue routes require the Codex Responses API; codex app-server cannot "
+                   "activate the access program. Fall back with `/codex-runtime auto`.")
+        return _turn_result(
+            _consume_user_interrupt(agent), messages, api_calls=0, completed=False,
+            error=message, final_response=message,
+        )
     _ensure_codex_session(agent, messages)
     try:
         _start_codex_thread(agent)

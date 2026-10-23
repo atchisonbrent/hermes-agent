@@ -97,6 +97,40 @@ def _finalize_codex_models(model_ids: list[str]) -> list[str]:
     return _add_context_variants(_add_forward_compat_models(model_ids))
 
 
+def _add_daybreak_blue_variants(model_ids: list[str], entries: list[object]) -> list[str]:
+    """Project explicit Blue routes only for models the authenticated account advertises."""
+    from agent.codex_model_variants import CODEX_DAYBREAK_BLUE_SUFFIX, codex_access_program_for_model
+    from agent.model_metadata import strip_codex_context_variant_suffix
+
+    eligible: set[str] = set()
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        slug = item.get("slug")
+        programs = item.get("available_access_programs")
+        cyber = programs.get("cyber") if isinstance(programs, dict) else None
+        if not isinstance(slug, str) or not isinstance(cyber, (list, tuple)):
+            continue
+        slug = slug.strip()
+        if (slug and not slug.startswith("gpt-daybreak-blue")
+                and all(isinstance(program, str) for program in cyber)
+                and "daybreak_blue" in cyber):
+            eligible.add(slug)
+    out: list[str] = []
+    present: set[str] = set()
+    for model_id in model_ids:
+        if model_id not in present:
+            out.append(model_id)
+            present.add(model_id)
+        if codex_access_program_for_model(model_id):
+            continue
+        variant = model_id + CODEX_DAYBREAK_BLUE_SUFFIX
+        if strip_codex_context_variant_suffix(model_id) in eligible and variant not in present:
+            out.append(variant)
+            present.add(variant)
+    return out
+
+
 def _drop_undiscovered_astra(model_ids: list[str]) -> list[str]:
     """Astra is account-gated: only the live account-scoped catalog may advertise it. A stale
     ``models_cache.json`` or a ``config.toml`` default is a compatibility hint, not entitlement."""
@@ -181,7 +215,7 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
 
-    return _finalize_codex_models(_ranked_slugs(entries))
+    return _add_daybreak_blue_variants(_finalize_codex_models(_ranked_slugs(entries)), entries)
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:

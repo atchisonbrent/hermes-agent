@@ -1417,14 +1417,14 @@ class _CodexCompletionsAdapter:
         # (agent/transports/codex.py). Maintaining a private conversion loop here let chat-style messages
         # with role="tool" leak straight into Responses input[] — which the Responses API rejects with
         # "Invalid value: 'tool'. Supported values are: 'assistant', 'system', 'developer', and 'user'."
-        # (issue #5709, hit hard by flush_memories() / compression replaying real session history that
-        # includes assistant tool_calls + role="tool" results). The shared converter encodes assistant tool
-        # calls as `function_call` items and tool results as `function_call_output` items with a valid
-        # call_id, so every Responses path normalizes tool history identically and cannot drift.
+        # (issue #5709, hit hard by flush_memories() / compression replaying real session history with
+        # assistant tool_calls + role="tool" results). The shared converter emits function_call and
+        # function_call_output items with valid call_ids, so every Responses path stays aligned.
         from agent.codex_responses_adapter import (
             _chat_messages_to_responses_input,
             _classify_responses_issuer,
             _responses_tools,
+            _reasoning_model_identity,
             _role_message_item,
             _wire_model_identity,
             classify_responses_route,
@@ -1432,10 +1432,11 @@ class _CodexCompletionsAdapter:
         from agent.transports.codex import _alias_wire_tools
         model = kwargs.get("model", self._model)
         wire_model = _wire_model_identity(model)
+        from agent import codex_model_variants as model_variants
         host = str(getattr(self._client, "base_url", "") or "")
         is_copilot = base_url_host_matches(host, "githubcopilot.com")
-        # Same route classifier as the main transport, so the issuer stamp matches what it minted.
-        route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
+        route = classify_responses_route(SimpleNamespace(
+            provider=getattr(self._client, "_hermes_aux_effective_provider", None), base_url=host))
         is_xai = route.is_xai_responses
         is_github = route.is_github_responses
         tools = kwargs.get("tools")
@@ -1454,11 +1455,7 @@ class _CodexCompletionsAdapter:
                     "Auxiliary client: failed to sanitize tool schemas for "
                     "Codex/xAI Responses path: %s", exc,
                 )
-        # Tool schemas go through the SAME converter (``strict: False``) and the SAME reserved-name
-        # aliasing (OpenCode / Perplexity / xAI) as agent/transports/codex.py::build_kwargs. A private
-        # list here sent raw names without ``strict``, so title/compression/MoA calls 400ed on routes
-        # where the main loop worked (#114260). The alias map is request-local: it rides on the payload
-        # (``_wire_aliases``, popped in ``create()``), never on the instance — aux adapters are shared.
+        # Use the main transport's schema conversion and request-local reserved-name alias map (#114260).
         wire_tools, wire_aliases = _alias_wire_tools(
             _responses_tools(tools),
             {"provider": getattr(self._client, "_hermes_aux_effective_provider", "") or None, "base_url": host},
@@ -1494,10 +1491,10 @@ class _CodexCompletionsAdapter:
         input_items = _chat_messages_to_responses_input(
             replay_messages, is_github_responses=is_copilot,
             current_issuer_kind=issuer_kind,
-            current_issuer_model=wire_model, native_compaction_eligible=False,
+            current_issuer_model=_reasoning_model_identity(model), native_compaction_eligible=False,
         )
         resp_kwargs: dict[str, Any] = {
-            # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.
+            # Codex gets the base slug; Hermes picker suffixes become separate request fields below.
             "model": wire_model, "instructions": instructions,
             "input": input_items or [_role_message_item("user", "")], "store": False,
         }
@@ -1533,12 +1530,14 @@ class _CodexCompletionsAdapter:
                     resp_kwargs["include"] = ["reasoning.encrypted_content"]
                 elif "none" in supported and not is_xai:
                     resp_kwargs["reasoning"] = {"effort": "none"}
+        resp_kwargs.update(model_variants.codex_access_program_request_fields(model, is_codex_backend=route.is_codex_backend))
         if wire_tools:
             resp_kwargs["tools"] = wire_tools
         if wire_aliases:
             resp_kwargs["_wire_aliases"] = wire_aliases
         # Response normalization is route-sensitive too (popped in ``create()``, never sent).
         resp_kwargs["_issuer_kind"] = issuer_kind
+        resp_kwargs["_issuer_model"] = _reasoning_model_identity(model)
         # Stable prompt-cache routing: key is content-addressed from the static prefix
         # (instructions + tool schemas) so it survives across turns, scoped by the owning
         # conversation (rotation-stable logical scope, else the physical session id). Skip the
@@ -1553,7 +1552,8 @@ class _CodexCompletionsAdapter:
                 scope = _cache_scope_from_session_id(
                     _runtime_main_value("cache_scope") or _runtime_main_value("session_id")
                 )
-                cache_key = _content_cache_key(resp_kwargs["instructions"], resp_kwargs.get("tools"), scope)
+                cache_instructions = model_variants.codex_access_program_cache_identity(resp_kwargs["instructions"], model)
+                cache_key = _content_cache_key(cache_instructions, resp_kwargs.get("tools"), scope)
                 if cache_key:
                     resp_kwargs["prompt_cache_key"] = cache_key
             if "prompt_cache_retention" not in resp_kwargs:
@@ -1583,7 +1583,8 @@ class _CodexCompletionsAdapter:
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
         wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
         issuer_kind = resp_kwargs.pop("_issuer_kind", None)
-        issuer_model = str(resp_kwargs.get("model") or model)
+        issuer_model = resp_kwargs.pop("_issuer_model", None) or str(resp_kwargs.get("model") or model)
+        wire_model = str(resp_kwargs.get("model") or model)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
         try:
@@ -1605,14 +1606,13 @@ class _CodexCompletionsAdapter:
                     final = event_stream
                 else:
                     final = _consume_codex_event_stream(
-                        event_stream, model=issuer_model, on_event=guard.on_event
+                        event_stream, model=wire_model, on_event=guard.on_event
                     )
             finally:
                 guard.release_stream(event_stream)
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
             from agent.auxiliary_codex_response import _parse_codex_final_response
-
             text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(
                 final, issuer_kind=issuer_kind, issuer_model=issuer_model,
             )
@@ -2981,10 +2981,8 @@ def _codex_base_url_override() -> str:
 
 
 def _build_codex_client(model: str) -> tuple[Optional[Any], Optional[str]]:
-    """CodexAuxiliaryClient for an explicit model; (None, None) without a Codex OAuth token.
-
-    No auto-selected default: the Codex model allow-list is undocumented and drifts.
-    """
+    """CodexAuxiliaryClient for an explicit model; no token returns ``(None, None)``.
+    No auto-selected default: the Codex model allow-list is undocumented and drifts."""
     if not model:
         logger.warning(
             "Auxiliary client: openai-codex requested without a model; "
@@ -2999,6 +2997,8 @@ def _build_codex_client(model: str) -> tuple[Optional[Any], Optional[str]]:
         api_key=codex_token, base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url),
     )
+    with contextlib.suppress(AttributeError, TypeError):
+        real_client._hermes_aux_effective_provider = "openai-codex"
     return CodexAuxiliaryClient(real_client, model), model
 
 

@@ -455,16 +455,39 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     Returns None (fall through) when the catalog is empty."""
     catalog = _static_catalog(req.normalized)
     if req.normalized == "openai-codex":
+        from agent.codex_model_variants import codex_access_program_for_model, strip_codex_access_program_suffix
         from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
+        from hermes_cli.model_normalize import normalize_model_for_provider
 
+        raw_lookup = normalize_model_for_provider(req.lookup, req.normalized).strip().lower()
+        normalized_catalog = {
+            normalize_model_for_provider(item, req.normalized).strip().lower() for item in catalog
+        }
+        if raw_lookup in normalized_catalog:
+            return _accept()
+        before_context = (
+            raw_lookup[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
+            if raw_lookup.endswith(CODEX_CONTEXT_VARIANT_SUFFIX) else ""
+        )
+        if before_context and codex_access_program_for_model(before_context):
+            return _reject(
+                f"`{req.requested}` has invalid Daybreak/context suffix order. Use "
+                "`<model>-900k-daybreak-blue` (Daybreak last), or pick the generated route from `/model`."
+            )
+        context_lookup = strip_codex_access_program_suffix(raw_lookup)
         # Ineligible ``-900k`` aliases must be rejected BEFORE the hidden-slug soft-accept:
         # the suffix is a Hermes picker convention, so an unknown `*-900k` can never be a real
         # hidden provider slug — soft-accepting one silently runs at 272K on a different model.
-        if req.lookup.strip().lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX) and req.lookup not in set(catalog):
-            if is_codex_context_variant(req.lookup):
-                # Valid variant a stale catalog hasn't synthesized yet.
-                return _accept()
-            base_guess = req.lookup[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
+        if context_lookup.endswith(CODEX_CONTEXT_VARIANT_SUFFIX) and raw_lookup not in normalized_catalog:
+            if is_codex_context_variant(context_lookup):
+                if codex_access_program_for_model(req.lookup):
+                    return _soft_accept(
+                        f"Note: `{req.requested}` is a valid large-context shape, but its Daybreak access "
+                        "route was not found in this account's current model listing. The backend remains "
+                        "authoritative and may reject it."
+                    )
+                return _accept()  # Valid non-access variant a stale catalog has not synthesized yet.
+            base_guess = context_lookup[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
             return _reject(
                 f"`{req.requested}` is not a valid large-context variant — `{base_guess}` enforces the "
                 "standard 272K window on Codex, so no `-900k` option exists for it. Pick the base model, "
@@ -482,13 +505,21 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     # unrelated name (`qwen3.5-4b`) would turn an actionable "did you mean --provider <x>?" into
     # a confusing success that 400s on the next turn, so reject it with guidance instead.
     prefixes = _STATIC_FAMILY_PREFIXES.get(req.normalized, ())
-    lower = req.lookup.strip().lower()
+    from hermes_cli.model_normalize import normalize_model_for_provider
+    lower = normalize_model_for_provider(req.lookup, req.normalized).strip().lower()
     if prefixes and not any(lower.startswith(p) for p in prefixes):
         return _reject(
             f"`{req.requested}` doesn't look like a {label} model and isn't in its listing, so it was not "
             "accepted. If it belongs to another configured provider, switch with `--provider <slug>` "
             f"(or select it from the `/model` picker).{match.suggestion_text}"
         )
+    if req.normalized == "openai-codex":
+        from agent.codex_model_variants import codex_access_program_for_model
+        if codex_access_program_for_model(req.lookup):
+            return _soft_accept(
+                f"Note: `{req.requested}` is a Daybreak access route not found in this account's current "
+                "model listing. The backend remains authoritative and may reject it."
+            )
     return _soft_accept(
         f"Note: `{req.requested}` was not found in the {label} model listing. "
         "It may still work if your account has access to a newer or hidden model ID."

@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import hermes_yaml as yaml
 
 from agent import model_metadata_http
+from agent.codex_model_variants import bare_codex_slug as _bare_codex_slug, strip_codex_access_program_suffix
 from agent.model_metadata_llamacpp import llamacpp_context
 
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
@@ -1706,20 +1707,12 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: dict[str, int] = {
 }
 _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent on the wire
+
 # The ONLY bases eligible for ``-900k``: routable, live-verified. No family prefixing (it would synthesize
 # dead ``-pro`` variants); dated snapshots of the 5.6 / gpt-6 tier bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
 _CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol")
 _CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra", "gpt-6.1-sol"})
 _CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def _bare_codex_slug(model: Optional[str]) -> str:
-    """Lowercased slug without ``vendor/`` (display/auxiliary callers pass ``openai/gpt-5.6-sol-900k``).
-
-    Display/auxiliary callers pass ids like ``openai/gpt-5.6-sol-900k``; the main-agent path normalizes the
-    namespace away earlier, but this resolver must accept both shapes (#92797 review).
-    """
-    return (model or "").strip().lower().rsplit("/", 1)[-1]
 
 
 def is_codex_900k_base(model: Optional[str]) -> bool:
@@ -1735,7 +1728,7 @@ def is_codex_900k_base(model: Optional[str]) -> bool:
 
 def _codex_variant_base(model: Optional[str]) -> Optional[str]:
     """Lowercased eligible base of a VALID ``-900k`` variant, else None (``gpt-5.5-900k`` is an invalid alias)."""
-    slug = _bare_codex_slug(model)
+    slug = _bare_codex_slug(strip_codex_access_program_suffix(model))
     base = slug[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)] if slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX) else None
     return base if base is not None and is_codex_900k_base(base) else None
 
@@ -1746,9 +1739,12 @@ def is_codex_context_variant(model: Optional[str]) -> bool:
 
 
 def strip_codex_context_variant_suffix(model: Optional[str]) -> str:
-    """Wire-safe slug with a VALID ``-900k`` suffix removed (vendor prefix kept); an ineligible alias is
-    returned unchanged so it fails honestly at the API instead of running as another model."""
-    raw = (model or "").strip()
+    """Wire-safe slug with recognized access-program and VALID ``-900k`` suffixes removed.
+
+    Vendor prefixes are kept. An ineligible context alias is returned without only the recognized
+    access-program suffix, so it still fails honestly instead of running as another model.
+    """
+    raw = strip_codex_access_program_suffix(model)
     return raw[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)] if _codex_variant_base(raw) is not None else raw
 
 

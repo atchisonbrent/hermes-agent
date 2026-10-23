@@ -2,6 +2,8 @@ import base64
 import json
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.codex_models import (
     _FORWARD_COMPAT_TEMPLATE_MODELS,
     DEFAULT_CODEX_MODELS,
@@ -139,6 +141,66 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
     assert "gpt-5.5" in models
     assert "gpt-5.3-codex-spark" in models
     assert "gpt-5-internal" not in models
+
+
+def test_live_catalog_projects_daybreak_only_for_account_advertised_models(monkeypatch):
+    """Picker routes reflect this account's access metadata; they are never inferred from model names."""
+    import sys
+    from hermes_cli import codex_models
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"models": [
+                {"slug": "gpt-6-sol", "priority": 0,
+                 "available_access_programs": {"cyber": ["standard", "daybreak_blue"]}},
+                {"slug": "gpt-6.1-sol", "priority": 1,
+                 "available_access_programs": {"cyber": ["standard"]}},
+                {"slug": "gpt-daybreak-blue-latest", "priority": 2,
+                 "available_access_programs": {"cyber": ["daybreak_blue"]}},
+            ]}
+
+    fake_httpx = type("_FakeHttpx", (), {"get": staticmethod(lambda *_a, **_kw: _FakeResp())})
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    models = codex_models._fetch_models_from_api(access_token=_codex_jwt("acct"))
+
+    assert "gpt-6-sol-daybreak-blue" in models
+    assert "gpt-6-sol-900k-daybreak-blue" in models
+    assert "gpt-6.1-sol-daybreak-blue" not in models
+    assert "gpt-daybreak-blue-latest-daybreak-blue" not in models
+
+
+@pytest.mark.parametrize("programs", [
+    ["daybreak_blue"],
+    "daybreak_blue_pending",
+    1,
+    {"cyber": {"daybreak_blue": False}},
+    {"cyber": "daybreak_blue"},
+    {"cyber": 1},
+    None,
+])
+def test_malformed_access_program_metadata_never_projects_daybreak(programs):
+    from hermes_cli.codex_models import _add_daybreak_blue_variants
+
+    entries = [{"slug": "gpt-6-sol", "available_access_programs": programs}]
+    assert _add_daybreak_blue_variants(["gpt-6-sol"], entries) == ["gpt-6-sol"]
+
+
+def test_daybreak_projection_dedupes_real_catalog_route():
+    from hermes_cli.codex_models import _add_daybreak_blue_variants
+
+    entries = [
+        {"slug": " gpt-6-sol ",
+         "available_access_programs": {"cyber": ["standard", "daybreak_blue"]}},
+        {"slug": "gpt-6-sol-daybreak-blue"},
+    ]
+    projected = _add_daybreak_blue_variants(
+        ["gpt-6-sol", "gpt-6-sol-daybreak-blue"], entries,
+    )
+    assert projected.count("gpt-6-sol-daybreak-blue") == 1
+    assert "gpt-6-sol-daybreak-blue-daybreak-blue" not in projected
 
 
 def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
