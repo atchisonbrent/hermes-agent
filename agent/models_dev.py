@@ -104,6 +104,9 @@ class ModelCapabilities:
     context_window: int = 200000
     max_output_tokens: Optional[int] = None
     model_family: str = ""
+    # None: source has no effort schema. Empty: no graded control (toggle-only
+    # and always-on reasoning are not an OpenAI effort ladder).
+    reasoning_efforts: Optional[tuple[str, ...]] = None
 
 
 # Hermes provider names → models.dev provider IDs
@@ -128,6 +131,7 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "meta-ai": "meta", "meta": "meta", "groq": "groq", "mistral": "mistral",
     "togetherai": "togetherai", "perplexity": "perplexity", "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
+    "wandb": "wandb",
 }
 # Reverse mapping: models.dev id → Hermes ids (built lazily; many-to-one).
 _MODELS_DEV_TO_PROVIDER: Optional[dict[str, list[str]]] = None
@@ -153,9 +157,10 @@ def _configured_catalog_provider(
     """``catalog_provider`` declared on a custom provider's ``providers.<name>`` row (or legacy
     ``custom_providers[]`` entry): the catalogued vendor whose models it resells. None when unset."""
     name = (provider or "").strip()
-    if name.lower().startswith("custom:"):
+    explicit_custom = name.lower().startswith("custom:")
+    if explicit_custom:
         name = name[len("custom:"):]
-    if not name or name in PROVIDER_TO_MODELS_DEV:
+    if not name or (not explicit_custom and name in PROVIDER_TO_MODELS_DEV):
         return None
     provider_config = (
         _cfg_get("providers", name, default=None, config=config)
@@ -876,7 +881,22 @@ def get_model_capabilities(
         context_window=_extract_limit(raw, "context") or 200000,
         max_output_tokens=_extract_limit(raw, "output"),
         model_family=raw.get("family", "") or "",
+        reasoning_efforts=_catalog_reasoning_efforts(raw),
     )
+
+
+def _catalog_reasoning_efforts(raw: dict[str, Any]) -> Optional[tuple[str, ...]]:
+    options = raw.get("reasoning_options")
+    if not isinstance(options, list):
+        return None
+    efforts = []
+    for option in options:
+        if not isinstance(option, dict) or option.get("type") != "effort":
+            continue
+        values = option.get("values")
+        if isinstance(values, list):
+            efforts.extend(v.strip().lower() for v in values if isinstance(v, str) and v.strip())
+    return tuple(dict.fromkeys(efforts)) if raw.get("reasoning") is True else ()
 
 
 def list_provider_models(provider: str, *, allow_network: bool = True) -> list[str]:

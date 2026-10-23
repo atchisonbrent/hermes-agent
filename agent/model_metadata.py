@@ -455,7 +455,7 @@ _URL_TO_PROVIDER: dict[str, str] = {
     "integrate.api.nvidia.com": "nvidia", "api.xiaomimimo.com": "xiaomi", "xiaomimimo.com": "xiaomi",
     "api.gmi-serving.com": "gmi", "api.novita.ai": "novita",
     "tokenhub.tencentmaas.com": "tencent-tokenhub", "api.lkeap.cloud.tencent.com": "tencent-tokenplan",
-    "ollama.com": "ollama-cloud",
+    "ollama.com": "ollama-cloud", "api.inference.wandb.ai": "wandb",
 }
 
 # Auto-extend with provider-profile hostnames not already mapped.
@@ -475,7 +475,7 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
         return None
     host = parsed.netloc.lower() or parsed.path.lower()
     for url_part, provider in _URL_TO_PROVIDER.items():
-        if url_part in host:
+        if url_part in host and (provider != "wandb" or base_url_hostname(base_url) == url_part):
             return provider
     return None
 
@@ -2212,11 +2212,11 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
         if isinstance(or_ctx, int) and or_ctx > 0 and not (or_ctx == 32768 and _model_name_suggests_kimi(model)):
             return or_ctx
     if effective_provider:
-        from agent.models_dev import lookup_models_dev_context
+        from agent.models_dev import _models_dev_id, lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
-            # MiniMax M3: models.dev reports 512K but actual context is 1M — prefer the hardcoded catalog.
-            catalog = DEFAULT_CONTEXT_LENGTHS.get("minimax-m3") if _model_name_suggests_minimax_m3(model) else None
+            # Preserve the M3 correction except for CoreWeave's catalog, including explicitly declared aliases.
+            catalog = DEFAULT_CONTEXT_LENGTHS.get("minimax-m3") if _models_dev_id(effective_provider) != "wandb" and _model_name_suggests_minimax_m3(model) else None
             if catalog and ctx < catalog:
                 logger.info("Rejecting models.dev context=%s for %r (MiniMax-M3 underreport); using hardcoded default %s", ctx, model, f"{catalog:,}")
                 ctx = catalog
