@@ -430,30 +430,34 @@ hermes config set compression.codex_gpt55_autoraise_notice false
 
 ### Codex large-context `-900k` picker variants (opt-in)
 
-The ChatGPT Codex backend *advertises* a 272K window for the gpt-5.4, gpt-5.6
-(Sol/Terra/Luna) and GPT-6 (Sol/Terra/Luna) families, but actually accepts ~911K input tokens
-for ChatGPT-subscription accounts (live-verified Aug 2026). Hermes keeps the
-**advertised 272K as the default** for the base slugs — a bigger window means
-more tokens per request and much faster subscription-usage burn, so the large
-window is strictly opt-in.
+Base slugs keep the account's advertised context window; the larger window is
+strictly opt-in because it consumes subscription usage faster. Older eligible
+families advertised 272K despite accepting ~911K input tokens (live-verified Aug
+2026). Current authenticated GPT-6.1 Terra and Sol catalogs can instead advertise
+500K with an 872K maximum. Those are catalog limits, not a near-limit Terra probe.
 
-To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
+Pick the explicit `-900k` variant in `/model` (e.g. `gpt-6.1-terra-900k`,
 `gpt-6.1-sol-900k`, `gpt-5.6-sol-900k`, `gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`,
-`gpt-5.4-900k`, `gpt-6-sol-900k`, `gpt-6-luna-900k`, `gpt-6-astra-900k`). Eligible variants use the upstream **900K** fallback.
-These are Hermes-side aliases: the suffix is stripped before
-the model id is sent to the backend. On Codex OAuth these requests retain
-subscription-included accounting; the aliases do not establish direct-API prices.
-Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
-have no `-900k` variant.
-When the authenticated Codex catalog publishes a `max_context_window` below
-the variant fallback (e.g. 872K), the variant resolves to that live maximum;
-a published maximum above the fallback does not raise it.
+`gpt-5.4-900k`, `gpt-6-sol-900k`, `gpt-6-luna-900k`, `gpt-6-astra-900k`).
+The **900K** name is a picker convention, not a promise of a 900K provider limit.
+The suffix is stripped before the model id reaches the backend. On Codex OAuth
+these requests retain subscription-included accounting; the aliases do not
+establish direct-API prices. Ineligible slugs (e.g. gpt-5.5, gpt-5.4-mini and
+`-pro` aliases) have no `-900k` variant. GPT-6.1 Terra is base-only, not a dated
+snapshot family.
 
-Compaction thresholds follow the window: the listed gpt-5.x and Astra base
-families and the GPT-6 Sol/Luna tiers get the **85% autoraise** described above.
-The `-900k` variants keep your global
-`compression.threshold` (default 50%, ~450K) — the autoraise exists to stop
-wasting a small window, which a 900K window doesn't need.
+A published `max_context_window` resolves an explicit variant to the smaller of
+that maximum and its 900K budget, regardless of its ordinary advertised window.
+Thus 500K/872K resolves to 500K for the base and 872K for the variant. Without a
+published maximum, trust non-272K advertisements; only legacy stale 272K values
+use the verified bump. The existing account-and-endpoint-scoped cache retains
+its last observed maximum across failed catalog refreshes.
+
+Older base families can receive the **85% autoraise** described above. The
+`-900k` variants keep your configured compression threshold. At 872K, a global
+50% threshold triggers at 436K, not 450K. For a 450K trigger, set the variant's
+`compression.model_thresholds` entry to `0.85` and the absolute
+`compression.threshold_tokens` cap to `450000`; the absolute cap then wins.
 
 ### Codex app-server thread compaction
 

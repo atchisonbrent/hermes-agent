@@ -1678,7 +1678,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
-    "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
+    "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6.1-terra": 500_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -1687,7 +1687,7 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
 # Codex OAuth advertises 272K for these families but ACCEPTS ~900K+ (verified live; gpt-5.5 and
 # gpt-5.4-mini genuinely reject >272K). 900K keeps ≥11K margin. OPT-IN ONLY via explicit ``-900k``
 # picker variants (a 900K default burned subscription usage); the suffix is stripped before the wire.
-# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` and the gpt-6
+# Without a catalog maximum, bump ONLY the stale 272,000. ``gpt-5.6`` and the gpt-6
 # tiers are FAMILY PREFIXES so dated snapshots (``gpt-6-sol-2026-09-22``) inherit the bump (``-pro`` slugs
 # aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K. The gpt-6 tiers
 # carry the 5.6 verdict forward: they replace Sol/Terra/Luna on the same Codex route, and the live
@@ -1699,19 +1699,18 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: dict[str, int] = {
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: dict[str, int] = {
     "gpt-5.4": 900_000, "gpt-daybreak-blue-latest": 900_000,
     "gpt-6-astra": 900_000,  # advertised 272K; 920,043 input OK, 1,000,043 rejected (live 2026-09-04)
-    # advertised 272K; 918,137 input OK, ~931K rejected (live 2026-09-29), consistent with the 922K left by
-    # the model page's 1.05M context minus 128K max output (derived, not a published input cap).
-    # Explicit base entry; eligible dated snapshots also use the prefix table above.
-    # The picker eligibility check excludes unroutable ``-pro`` variants.
-    "gpt-6.1-sol": 900_000,
+    # Sol was live-probed above 900K; Terra opts into its account-published max (872K).
+    # Terra's 500K fallback is not raised without catalog evidence. No -pro synthesis.
+    "gpt-6.1-sol": 900_000, "gpt-6.1-terra": 900_000,
 }
 _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent on the wire
 
-# The ONLY bases eligible for ``-900k``: routable, live-verified. No family prefixing (it would synthesize
-# dead ``-pro`` variants); dated snapshots of the 5.6 / gpt-6 tier bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
+# The ONLY bases eligible for ``-900k``: routable, verified or catalog-backed. No family prefixing
+# (it would synthesize dead ``-pro`` variants). Only bases in the snapshot tuple allow dated
+# snapshots; GPT-6.1 Terra is base-only. gpt-daybreak-blue-latest is a verified Sol alias.
 _CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol")
-_CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra", "gpt-6.1-sol"})
+_CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra"})
 _CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -1916,11 +1915,12 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     if not model_bare:
         return None, ""
     def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
-        never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
+        """An opt-in uses the published maximum, capped by its variant budget; absent that evidence,
+        only the legacy stale 272K advertisement may use the verified bump (#105443)."""
         bumped = _verified_codex_ctx_for_slug(model_bare)
+        if bumped is not None and catalog_max is not None:
+            return min(bumped, catalog_max), source
         if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
-            bumped = min(bumped, catalog_max) if catalog_max else bumped
             logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
             return bumped, source
         return ctx, source

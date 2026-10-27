@@ -489,8 +489,8 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
                 return _accept()  # Valid non-access variant a stale catalog has not synthesized yet.
             base_guess = context_lookup[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
             return _reject(
-                f"`{req.requested}` is not a valid large-context variant — `{base_guess}` enforces the "
-                "standard 272K window on Codex, so no `-900k` option exists for it. Pick the base model, "
+                f"`{req.requested}` is not a valid large-context variant for `{base_guess}`. "
+                "No verified or catalog-backed `-900k` option exists for that base. Pick the base model, "
                 "or a verified variant from the `/model` picker (e.g. `gpt-5.6-sol-900k`)."
             )
     if not catalog:
