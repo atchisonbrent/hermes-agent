@@ -872,6 +872,12 @@ def get_pricing_entry(
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
 
+    if route.billing_mode == "unknown":
+        from agent.usage_pricing_config import configured_pricing_entry
+        configured = configured_pricing_entry(model_name, provider, base_url)
+        if configured is not None:
+            return configured
+
     bundled_entry = _lookup_official_docs_pricing(route)
     if bundled_entry:
         return bundled_entry

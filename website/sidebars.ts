@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/configuration',
         'user-guide/managed-scope',
         'user-guide/configuring-models',
+        'user-guide/custom-reference-pricing',
         {
           type: 'category',
           label: 'Secrets',

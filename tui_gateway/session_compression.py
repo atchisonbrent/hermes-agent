@@ -164,6 +164,8 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     cc.threshold_tokens_cap = cc._coerce_threshold_tokens_cap(
         compression.get("threshold_tokens", _default_threshold_tokens_cap())
     )
+    raw_caps = compression.get("model_threshold_tokens")
+    cc.model_threshold_tokens = raw_caps if isinstance(raw_caps, dict) else {}
     # Invalidate the cached trigger so the next preflight re-derives from percent/window, then the cap.
     cc._threshold_tokens = cc._tail_token_budget = None
 

@@ -1044,7 +1044,24 @@ The value is the **first rung** of an escalating ladder, not a fixed interval: c
 
 `in_place` (default `true`) controls what happens to the session identity when compaction fires. When `true`, compaction rewrites the message list and rebuilds the system prompt **without rotating the session id** — the conversation keeps one durable id for its whole life (no `parent_session_id` chain, no `name #2` / `#3` renumbering in session lists). Compaction is non-destructive: the live context is compacted, but the pre-compaction turns are soft-archived under the same id (marked inactive/compacted) — still searchable via `session_search` and recoverable, not deleted. Hooks see the mode via the `in_place` field on the `session:compress` event. Set `in_place: false` to restore the legacy behavior where each compaction rotates to a new session id linked to the old one.
 
-`threshold_tokens` sets an optional **absolute token cap** for the compression trigger. When set, compression fires at the lower of the ratio-based `threshold` and this absolute count, so compaction never fires later than that token count regardless of which model is active. Use it when you want a fixed cost ceiling per call, for example `threshold_tokens: 256000` to compact a 1M-window model at 256K instead of 500K. The cap is clamped to the model's context length, so a value above the window is a no-op. Default `null` (disabled — ratio-based threshold only). The cap survives model switches and fallback activations.
+`threshold_tokens` sets an optional **absolute token cap** for the compression trigger. When set, compression fires at the lower of the ratio-based `threshold` and this absolute count, unless an explicit per-model cap overrides it. Use it when you want a fixed cost ceiling per call, for example `threshold_tokens: 256000` to compact a 1M-window model at 256K instead of 500K. The cap is clamped to the model's context length, so a value above the window is a no-op. Default `null` (disabled — ratio-based threshold only). The cap survives model switches and fallback activations.
+
+`model_threshold_tokens` maps an **exact model ID**, or `provider:model-id`, to an integer token cap. For custom endpoints, use model-only keys: startup may resolve the provider to `custom`, while a model switch uses the saved provider key. Qualified custom-provider keys are therefore not stable across those paths. A matching provider/model key takes precedence over a model-only key. `0` disables the global cap for that model, leaving its percentage trigger and output-token reservation intact. Invalid values are ignored; there is no substring matching. Other models retain the global cap. These overrides apply at construction, model-switch previews, switches, and live compression-config reloads; they do not disable the auxiliary summarizer's context safety ceiling. For example:
+
+```yaml
+compression:
+  threshold_tokens: 450000
+  model_thresholds:
+    my-internal-model: 0.75
+  model_threshold_tokens:
+    my-internal-model: 0
+```
+
+A model-only cap exception follows that model ID to other providers, including
+paid routes. A more-specific key such as `openrouter:my-internal-model: 450000`
+restores the cap for that route. Explicit delegated-child budgets still retain
+the lower of the global and child caps, even when the model opts out.
+
 
 `idle_compact_after_seconds` is an **opt-in, time-based** trigger that complements the size-based `threshold`. Default `0` (disabled). When set above 0, a session that resumes after at least that many seconds of inactivity compacts its accumulated history up front, before the first reply — so a long-lived thread (e.g. a Telegram conversation you come back to hours later) doesn't re-read its full stale context on every subsequent turn. It never fires when the context is already at or below the post-compression target (`threshold × target_ratio`), and it honors the same failure-cooldown, anti-thrash, and per-session lock guards as every automatic compaction. Example: `idle_compact_after_seconds: 1800` compacts after 30 minutes idle.
 

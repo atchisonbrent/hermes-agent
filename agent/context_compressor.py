@@ -2657,14 +2657,27 @@ class ContextCompressor(
         base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
         effective_percent = self._effective_threshold_percent(context_length, base_percent)
         threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
-        cap = self._effective_threshold_cap(context_length)
+        cap = self._effective_threshold_cap(context_length, model, provider)
         if cap is not None:
             threshold = min(threshold, cap)
         return base_percent, effective_percent, threshold
 
-    def _effective_threshold_cap(self, context_length: int) -> int | None:
-        """The configured ``threshold_tokens`` cap clamped to the window; None when no cap is configured."""
+    def _effective_threshold_cap(
+        self, context_length: int, model: str | None = None, provider: str | None = None,
+    ) -> int | None:
+        """Exact model/route overrides replace the global cap; zero disables that cap."""
         cap = self.threshold_tokens_cap
+        model = self.model if model is None else model
+        provider = self.provider if provider is None else provider
+        overrides = getattr(self, "model_threshold_tokens", {})
+        for key in (f"{provider}:{model}", model):
+            value = overrides.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                cap = value or None
+                break
+        child_cap = getattr(self, "_delegation_threshold_tokens_cap", None)
+        if isinstance(child_cap, int) and child_cap > 0:
+            cap = min(cap, child_cap) if cap is not None else child_cap
         return min(cap, context_length) if cap is not None and cap > 0 else None
 
     def preview_threshold_tokens(self, model: str, context_length: int, provider: str = "") -> int:
@@ -2808,7 +2821,7 @@ class ContextCompressor(
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, model_threshold_tokens: dict[str, int] | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2824,6 +2837,8 @@ class ContextCompressor(
         self.threshold_percent = self._base_threshold_percent
         # Effective trigger = min(ratio threshold, cap); re-applied in update_model().
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(threshold_tokens_cap)
+        self._delegation_threshold_tokens_cap: int | None = None
+        self.model_threshold_tokens = model_threshold_tokens if isinstance(model_threshold_tokens, dict) else {}
         # Aux summariser window installed by the feasibility probe; None until it runs.
         self._aux_context_ceiling: int | None = None
         self.protect_first_n, self.protect_last_n = protect_first_n, protect_last_n

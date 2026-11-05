@@ -187,6 +187,8 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
         return
     existing = cc.threshold_tokens_cap
     cc.threshold_tokens_cap = min(cap, existing) if isinstance(existing, int) and existing > 0 else cap
+    # An explicit child budget remains a ceiling even when a model opts out of the global cap.
+    cc._delegation_threshold_tokens_cap = cc.threshold_tokens_cap
     if cc._threshold_tokens is not None:  # already resolved: re-clamp now
         cc._apply_threshold_tokens_cap()
 

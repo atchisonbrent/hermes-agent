@@ -51,3 +51,23 @@ def test_config_values_are_validated_not_coerced():
     child = _child()
     _apply_child_compression_cap(child, {"compression_threshold_tokens": True})
     assert child.context_compressor.threshold_tokens == 500_000
+
+
+def test_explicit_child_cap_cannot_be_disabled_by_model_exception():
+    child = _child(cap=450_000)
+    cc = child.context_compressor
+    cc.model_threshold_tokens = {cc.model: 0, "other": 900_000}
+    _apply_child_compression_cap(child, {"compression_threshold_tokens": 200_000})
+    assert cc.threshold_tokens == 200_000
+    assert cc.preview_threshold_tokens("other", 1_000_000) == 200_000
+    cc.update_model("other", 1_000_000)
+    assert cc.threshold_tokens == 200_000
+
+
+def test_larger_explicit_child_budget_retains_existing_global_safety_cap():
+    child = _child(threshold=0.75, cap=450_000)
+    cc = child.context_compressor
+    cc.model_threshold_tokens = {cc.model: 0}
+    assert cc.threshold_tokens == 750_000
+    _apply_child_compression_cap(child, {"compression_threshold_tokens": 600_000})
+    assert cc.threshold_tokens == 450_000
