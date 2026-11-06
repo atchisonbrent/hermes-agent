@@ -6253,8 +6253,9 @@ class TestSessionRoleCountIndex:
             db2.close()
 
     def _seeded(self, db_path):
-        # 100 rows per session: below about 49 the planner keeps idx_messages_session_id even
-        # without stats for the new index, so the plan assertion would not discriminate.
+        # 100 rows per session: SQLite 3.54.1 flips the latest-page plan from about 49 rows when the
+        # new index lacks stats (3.53.1 does not flip at all). The stat-row assertion is the
+        # version-independent control; the plan assertion checks the outcome where a flip occurs.
         db = SessionDB(db_path=db_path)
         for i in range(4):
             sid = f"s{i}"

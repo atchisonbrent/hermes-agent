@@ -27,7 +27,7 @@ Upstream comparison: `upstream/main` at `6b21d0564d` (2026-11-07). No index cove
 - `TestSessionRoleCountIndex` covers four things:
   - the plan and the counts;
   - recreation on reopen;
-  - stale stats gaining a row, with the `latest` transcript read staying on `idx_messages_session_id` without a temp sort (100 rows per session, above the about-49-row flip threshold);
+  - stale stats gaining a row (the version-independent control), with the `latest` transcript read on `idx_messages_session_id` without a temp sort. Independent review reproduced the stat-less flip on SQLite 3.54.1 from about 49 rows per session; SQLite 3.53.1, used by the dev test venv, does not flip even at 1,500 rows, so there the plan half passes regardless;
   - stat-less stores staying stat-less.
 - Removing the analyze step fails the stale-stats test.
 - `tests/hermes_state/test_hermes_state.py` fails the same 8 VACUUM/auto-maintenance and read-only-open tests on this change as on the base. `test_session_list_index_choice.py` passes.
