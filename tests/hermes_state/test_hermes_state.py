@@ -6253,13 +6253,15 @@ class TestSessionRoleCountIndex:
             db2.close()
 
     def _seeded(self, db_path):
+        # 100 rows per session: below about 49 the planner keeps idx_messages_session_id even
+        # without stats for the new index, so the plan assertion would not discriminate.
         db = SessionDB(db_path=db_path)
         for i in range(4):
             sid = f"s{i}"
             db.create_session(sid, "cli")
             db.append_messages_batch(sid, [
                 {"role": "user" if j % 2 == 0 else "assistant", "content": f"{sid} {j}", "timestamp": 1_000 + j}
-                for j in range(40)
+                for j in range(100)
             ])
         db.close()
 
