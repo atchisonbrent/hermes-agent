@@ -6252,6 +6252,51 @@ class TestSessionRoleCountIndex:
         finally:
             db2.close()
 
+    def _seeded(self, db_path):
+        db = SessionDB(db_path=db_path)
+        for i in range(4):
+            sid = f"s{i}"
+            db.create_session(sid, "cli")
+            db.append_messages_batch(sid, [
+                {"role": "user" if j % 2 == 0 else "assistant", "content": f"{sid} {j}", "timestamp": 1_000 + j}
+                for j in range(40)
+            ])
+        db.close()
+
+    def test_stale_stats_gain_a_row_for_the_new_index(self, tmp_path):
+        """Stats written before the index existed must not leave it unanalyzed (#119403 class)."""
+        import sqlite3
+
+        db_path = tmp_path / "stale.db"
+        self._seeded(db_path)
+        raw = sqlite3.connect(db_path)
+        raw.execute("ANALYZE")
+        raw.execute("DELETE FROM sqlite_stat1 WHERE idx = ?", (self._INDEX,))
+        raw.commit()
+        raw.close()
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._conn.execute("SELECT 1 FROM sqlite_stat1 WHERE idx = ?", (self._INDEX,)).fetchone()
+            plan = " ".join(str(tuple(row)) for row in db._conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM messages WHERE session_id = ? AND active = 1 "
+                "ORDER BY id DESC LIMIT ? OFFSET ?", ("s0", 500, 0)))
+            assert "idx_messages_session_id" in plan and "TEMP B-TREE" not in plan, plan
+        finally:
+            db.close()
+
+    def test_statless_store_is_not_analyzed(self, tmp_path):
+        """ANALYZE on a store without stats would create partial stats for one index only."""
+        db_path = tmp_path / "statless.db"
+        self._seeded(db_path)
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'"
+            ).fetchone() is None
+        finally:
+            db.close()
+
 
 class TestFtsRebuildFinishWithoutTrigram:
     """An FTS index that the runtime cannot maintain must not wedge the store.
