@@ -964,6 +964,18 @@ class SessionSchemaMixin:
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
         self._execute_ddl_skipping_settled_triggers(cursor, DEFERRED_INDEX_SQL)  # same ordering constraint (``active``)
+        # A sqlite_stat1 written before idx_messages_session_role existed has no row for it, so the planner
+        # treats it as selective and routes unpinned transcript reads (latest/full loads) through
+        # idx_messages_session_active plus a sort (the #119403 class). Give that one index stats, and only
+        # where stats already exist: ANALYZE on a stat-less store would create partial stats and misplan
+        # every other index instead.
+        with contextlib.suppress(sqlite3.OperationalError):
+            if cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'"
+            ).fetchone() and not cursor.execute(
+                "SELECT 1 FROM sqlite_stat1 WHERE idx = 'idx_messages_session_role'"
+            ).fetchone():
+                cursor.execute("ANALYZE idx_messages_session_role")
 
         # Heal NULL ``active`` rows on every startup: older reconciler builds added ``active``
         # without NOT NULL DEFAULT 1, so ``WHERE active = 1`` loaders hid whole histories. A
