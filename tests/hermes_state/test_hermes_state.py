@@ -6199,6 +6199,108 @@ class TestInsightsToolCallIndex:
         finally:
             db2.close()
 
+class TestSessionRoleCountIndex:
+    """Per-session counts by role and latest activity are answerable from an index.
+
+    The WebUI sidebar aggregates COUNT(*), COUNT(role = 'user') and MAX(timestamp)
+    per session over a recent-session window. Reading role from the table pulls
+    every message row of that window, which is a multi-second cold read on a
+    large state.db.
+    """
+
+    _INDEX = "idx_messages_session_role"
+    _AGGREGATE = (
+        "SELECT s.id, COUNT(m.id), COUNT(CASE WHEN LOWER(m.role) = 'user' THEN 1 END), MAX(m.timestamp) "
+        "FROM sessions s LEFT JOIN messages m ON m.session_id = s.id WHERE s.id IN (?, ?) GROUP BY s.id"
+    )
+
+    def _index_defn(self, conn):
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", (self._INDEX,)
+        ).fetchone()
+        return row["sql"] if row else None
+
+    def test_role_aggregate_is_covered_and_correct(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            for sid in ("a", "b"):
+                db.create_session(sid, "cli")
+                db.append_messages_batch(sid, [
+                    {"role": "user" if j % 3 == 0 else "assistant", "content": f"{sid} {j}", "timestamp": 100 + j}
+                    for j in range(9)
+                ])
+            assert "session_id, role, timestamp" in self._index_defn(db._conn)
+            plan = " ".join(str(tuple(row)) for row in db._conn.execute("EXPLAIN QUERY PLAN " + self._AGGREGATE, ("a", "b")))
+            assert f"COVERING INDEX {self._INDEX}" in plan, plan
+            rows = {row[0]: tuple(row)[1:] for row in db._conn.execute(self._AGGREGATE, ("a", "b"))}
+            assert rows == {"a": (9, 3, 108), "b": (9, 3, 108)}
+        finally:
+            db.close()
+
+    def test_index_created_on_existing_db(self, tmp_path):
+        """A database that predates the index gains it on the next open."""
+        db_path = tmp_path / "legacy.db"
+        db = SessionDB(db_path=db_path)
+        db._conn.execute(f"DROP INDEX IF EXISTS {self._INDEX}")
+        db._conn.commit()
+        assert self._index_defn(db._conn) is None
+        db.close()
+
+        db2 = SessionDB(db_path=db_path)
+        try:
+            assert self._index_defn(db2._conn) is not None
+        finally:
+            db2.close()
+
+    def _seeded(self, db_path):
+        # 100 rows per session: SQLite 3.54.1 flips the latest-page plan from about 49 rows when the
+        # new index lacks stats (3.53.1 does not flip at all). The stat-row assertion is the
+        # version-independent control; the plan assertion checks the outcome where a flip occurs.
+        db = SessionDB(db_path=db_path)
+        for i in range(4):
+            sid = f"s{i}"
+            db.create_session(sid, "cli")
+            db.append_messages_batch(sid, [
+                {"role": "user" if j % 2 == 0 else "assistant", "content": f"{sid} {j}", "timestamp": 1_000 + j}
+                for j in range(100)
+            ])
+        db.close()
+
+    def test_stale_stats_gain_a_row_for_the_new_index(self, tmp_path):
+        """Stats written before the index existed must not leave it unanalyzed (#119403 class)."""
+        import sqlite3
+
+        db_path = tmp_path / "stale.db"
+        self._seeded(db_path)
+        raw = sqlite3.connect(db_path)
+        raw.execute("ANALYZE")
+        raw.execute("DELETE FROM sqlite_stat1 WHERE idx = ?", (self._INDEX,))
+        raw.commit()
+        raw.close()
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._conn.execute("SELECT 1 FROM sqlite_stat1 WHERE idx = ?", (self._INDEX,)).fetchone()
+            plan = " ".join(str(tuple(row)) for row in db._conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM messages WHERE session_id = ? AND active = 1 "
+                "ORDER BY id DESC LIMIT ? OFFSET ?", ("s0", 500, 0)))
+            assert "idx_messages_session_id" in plan and "TEMP B-TREE" not in plan, plan
+        finally:
+            db.close()
+
+    def test_statless_store_is_not_analyzed(self, tmp_path):
+        """ANALYZE on a store without stats would create partial stats for one index only."""
+        db_path = tmp_path / "statless.db"
+        self._seeded(db_path)
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'"
+            ).fetchone() is None
+        finally:
+            db.close()
+
+
 class TestFtsRebuildFinishWithoutTrigram:
     """An FTS index that the runtime cannot maintain must not wedge the store.
 

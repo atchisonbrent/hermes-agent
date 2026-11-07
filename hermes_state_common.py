@@ -623,6 +623,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
     ON messages(session_id)
     WHERE role = 'assistant' AND tool_calls IS NOT NULL;
+-- Covering index for per-session message and user-turn counts with latest
+-- activity (COUNT, COUNT of role = 'user', MAX(timestamp) grouped by session),
+-- as the WebUI sidebar's recent-session projection computes over a candidate
+-- window. Without it SQLite reads every message row of the window from the
+-- table; on a multi-GB store that is a cold read of large rows (measured 7.0 s
+-- cold vs 0.33 s with this index). Base columns only, so SCHEMA_SQL is safe.
+CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, role, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
