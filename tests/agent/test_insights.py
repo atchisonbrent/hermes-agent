@@ -806,3 +806,19 @@ def test_source_filter_on_a_db_without_created_source(db):
     db._conn.execute("ALTER TABLE sessions DROP COLUMN created_source")
     db._conn.commit()
     assert InsightsEngine(db).generate(days=30, source="cli")["overview"]["total_sessions"] == 1
+
+
+def test_model_usage_breakdown_source_filter_matches_generate(db):
+    """The fork's public breakdown uses the same source semantics as ``generate()`` and the ledger
+    query: a gateway ``local`` row that the CLI created counts as ``cli``, on both old and new DBs."""
+    _label(db, "legacy-cli", "cli", "cli")
+    _label(db, "local-cli", "local", "cli")
+    _label(db, "local-tui", "local", "tui")
+    result = InsightsEngine(db).get_model_usage_breakdown(cutoff=0.0, source="cli")
+    assert result["session_ids"] == ["legacy-cli", "local-cli"]
+    assert InsightsEngine(db).generate(days=30, source="cli")["overview"]["total_sessions"] == 2
+
+    db._conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started")
+    db._conn.execute("ALTER TABLE sessions DROP COLUMN created_source")
+    db._conn.commit()
+    assert InsightsEngine(db).get_model_usage_breakdown(cutoff=0.0, source="cli")["session_ids"] == ["legacy-cli"]

@@ -108,7 +108,8 @@ class InsightsEngine:
 
     _GET_USAGE_SESSIONS_ALL, _GET_USAGE_SESSIONS_WITH_SOURCE = _scoped(
         f"SELECT {_SESSION_COLS} FROM sessions WHERE (started_at >= ? OR ended_at >= ?)",
-        " ORDER BY started_at DESC", src=" AND source = ?",
+        " ORDER BY started_at DESC",
+        alias="",
     )
 
     # ``INDEXED BY`` pins the partial index so the plan is deterministic on a
@@ -164,7 +165,7 @@ class InsightsEngine:
         " WHERE s.started_at >= ?",
     )
     _PINNED = ("_GET_TOOL_CALLS", "_GET_SKILL_CALLS")
-    _SOURCE_SCOPED = ("_GET_SESSIONS", "_GET_TOOL_CALLS", "_GET_SKILL_CALLS", "_GET_TOOL_NAMES",
+    _SOURCE_SCOPED = ("_GET_SESSIONS", "_GET_USAGE_SESSIONS", "_GET_TOOL_CALLS", "_GET_SKILL_CALLS", "_GET_TOOL_NAMES",
                       "_GET_MESSAGE_STATS", "_GET_MODEL_USAGE")
 
     def __init__(self, db):
@@ -398,9 +399,10 @@ class InsightsEngine:
     ) -> list[dict]:
         """Fetch sessions whose start or end falls at or after the cutoff."""
         if source:
-            cursor = self._conn.execute(
-                self._GET_USAGE_SESSIONS_WITH_SOURCE, (cutoff, cutoff, source)
-            )
+            # Same source semantics as the ledger rows (``_GET_MODEL_USAGE``): a gateway ``local`` row
+            # created by that surface matches too, so session coverage and ledger rows agree.
+            params = (cutoff, cutoff, source, source) if self._local_surfaces else (cutoff, cutoff, source)
+            cursor = self._conn.execute(self._GET_USAGE_SESSIONS_WITH_SOURCE, params)
         else:
             cursor = self._conn.execute(
                 self._GET_USAGE_SESSIONS_ALL, (cutoff, cutoff)
