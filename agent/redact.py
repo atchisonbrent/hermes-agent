@@ -4,7 +4,6 @@ Short tokens (< 18 chars) are fully masked; longer ones keep the first 6 and
 last 4 characters for debuggability.
 """
 
-import itertools
 import json
 import logging
 import os
@@ -891,16 +890,11 @@ def _mask_control_split_tokens(text: str, mask_fn) -> str:
     rejected).
     """
     stripped = _CONTROL_CHARS_RE.sub("", text)
-    if stripped == text:
-        return text
-    # Avoid a per-character Python/regex scan for large non-token text.
-    matches_iter = _PREFIX_RE.finditer(stripped)
-    first_match = next(matches_iter, None)
-    if first_match is None:
+    if stripped == text or not _PREFIX_RE.search(stripped):  # prefix miss: skip the per-char map below
         return text
     orig_idx = [i for i, c in enumerate(text) if not _CONTROL_CHARS_RE.match(c)]
     out, matches = list(text), []
-    for m in itertools.chain((first_match,), matches_iter):
+    for m in _PREFIX_RE.finditer(stripped):
         start_orig = orig_idx[m.start(1)]
         end_orig = orig_idx[m.end(1) - 1] + 1
         span = text[start_orig:end_orig]
