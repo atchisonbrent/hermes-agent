@@ -34,7 +34,8 @@ def test_oneshot_skills_prompt_drops_authoring_coaching(oneshot, interactive_pro
     assert "Read an existing owner before changing it" not in prompt
     assert "Persist a validated recurring procedure" not in prompt
     assert "no-write is a successful outcome" not in prompt
-    assert "do not create or edit" in prompt
+    # v0.23.1 ruling (d7094033f6): a one-shot keeps skill_manage, so the prompt no longer forbids authoring.
+    assert "do not create or edit" not in prompt
 
 
 def _skills_dir(tmp_path):
