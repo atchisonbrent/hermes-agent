@@ -204,7 +204,7 @@ def test_background_source_retains_human_antecedents():
 
 
 def test_runtime_prefix_messages_are_not_human_testimony():
-    from agent.conversation_compression import _SYNTHETIC_USER_PREFIXES
+    from agent.conversation_compression_scaffolding import _SYNTHETIC_USER_PREFIXES
     for prefix in _SYNTHETIC_USER_PREFIXES:
         with wa.review_evidence([{"role": "user", "content": prefix + " runtime content"}]):
             assert wa._evidence.get() == []
