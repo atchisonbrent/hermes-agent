@@ -2327,9 +2327,9 @@ _USAGE_STATE: dict[str, Any] = {
     "session_estimated_cost_usd": 0.0,
     "session_cost_status": "unknown",
     "session_cost_source": "none",
-    # Status-bar latency/velocity history (last 10 calls), shared by loop + codex_runtime.
-    "_api_latency_history": lambda: deque(maxlen=10),
-    "_api_output_history": lambda: deque(maxlen=10),
+    # Per-call histories (last 10), paired by position: seconds, output tokens, first-chunk-to-end seconds.
+    "_api_latency_history": lambda: deque(maxlen=10), "_api_output_history": lambda: deque(maxlen=10),
+    "_api_generation_history": lambda: deque(maxlen=10),
 }
 
 
