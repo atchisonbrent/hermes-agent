@@ -57,6 +57,34 @@ def test_codex_stream_records_first_lifecycle_event_before_text(monkeypatch):
     assert agent._last_api_first_chunk_at == 100.0
 
 
+def test_codex_stream_retry_times_the_attempt_that_answers(monkeypatch):
+    """A stream that dies after its first event is retried; the stamp must be the second attempt's
+    first event, or a first-chunk-to-end window would include the dead attempt."""
+    import itertools
+
+    agent = _agent()
+    ticks = itertools.count(100.0, 100.0)
+    monkeypatch.setattr("agent.codex_runtime.time.time", lambda: next(ticks))
+    attempts = 0
+
+    def _dies_after_first_event():
+        yield {"type": "response.created", "response": {"id": "fixture", "status": "in_progress"}}
+        raise httpx.ReadError("connection dropped mid-stream")
+
+    def create(**_):
+        nonlocal attempts
+        attempts += 1
+        return _dies_after_first_event() if attempts == 1 else _completed_events()
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+
+    result = run_codex_stream(agent, {"model": "timing-fixture", "input": "Say Yes."}, client=client)
+
+    assert result.output_text == "Yes."
+    assert attempts == 2
+    assert agent._last_api_first_chunk_at == 200.0
+
+
 @pytest.mark.parametrize("retire_before_event", [False, True])
 def test_codex_stream_without_accepted_event_keeps_timing_unset(retire_before_event):
     agent = _agent()

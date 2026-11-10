@@ -88,6 +88,37 @@ def test_stream_5xx_probe_success_delivers_response_without_latch(monkeypatch):
     assert call.buffered and "non-streaming retry succeeded" in call.buffered[0]
 
 
+def _run_to_the_outcome(call, monkeypatch):
+    """Drive ``run()`` past its request/monitor plumbing to the outcome translation."""
+    monkeypatch.setattr(h, "should_use_direct_api_call", lambda agent: True)
+    monkeypatch.setattr(h, "_reset_stale_streak", lambda agent: None)
+    call._resolve_stale_timeout = call._run_call = call._monitor_loop = lambda: None
+    return call.run()
+
+
+def test_stream_5xx_probe_success_drops_the_failed_attempts_first_chunk_time(monkeypatch):
+    """The recovered response never streamed, so the dead attempt's first chunk must not time it."""
+    call = _make_call({"model": "m", "stream": True, "messages": []})
+    call.clients = SimpleNamespace(diag={"first_chunk_at": 123.0, "chunks": 2})
+    call.agent._last_api_first_chunk_at = None
+    monkeypatch.setattr(h, "interruptible_api_call", lambda agent, kwargs: SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok", reasoning_content=None))]))
+    assert not _run_handle_stream_error(call, _StreamErr(500))
+
+    assert _run_to_the_outcome(call, monkeypatch) is call.result["response"]
+    assert call.agent._last_api_first_chunk_at is None
+
+
+def test_streamed_success_still_reports_its_first_chunk_time(monkeypatch):
+    call = _make_call({"model": "m", "stream": True, "messages": []})
+    call.clients = SimpleNamespace(diag={"first_chunk_at": 123.0, "chunks": 2})
+    call.agent._last_api_first_chunk_at = None
+    call.result["response"] = SimpleNamespace(choices=[])
+
+    _run_to_the_outcome(call, monkeypatch)
+    assert call.agent._last_api_first_chunk_at == 123.0
+
+
 def test_stream_5xx_unmasked_by_probe_4xx(monkeypatch):
     call = _make_call({"model": "m", "messages": []})
     real = _ProbeErr(400)

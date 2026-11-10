@@ -3725,7 +3725,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # A response we cannot replay must not escape into _call()'s except block.
             logger.exception("Non-streaming unmask probe response could not be replayed: %s", replay_err)
             return False
-        self.result["response"] = replayed
+        self.result["response"], self._unstreamed_replay = replayed, True  # no stream: the dead attempt's first chunk must not time it
         return True
 
     def _call_wire(self, stream_attempt_id: int):
@@ -3985,7 +3985,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if self.result["response"] is not None:
             _reset_stale_streak(self.agent)  # provider proved responsive: clear the breaker
         # Propagate first-chunk timing for the ``post_api_request`` hook.
-        if isinstance(self.clients.diag, dict) and self.clients.diag.get("first_chunk_at"):
+        if isinstance(self.clients.diag, dict) and self.clients.diag.get("first_chunk_at") and not getattr(self, "_unstreamed_replay", False):
             self.agent._last_api_first_chunk_at = float(self.clients.diag["first_chunk_at"])
         return self.result["response"]
 

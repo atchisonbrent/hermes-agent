@@ -70,9 +70,41 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def _generation_seconds(agent: Any, api_duration: float, api_start_time: float | None) -> float:
+    """Seconds the provider spent streaming this response: first stream chunk to response end.
+
+    The wait before the first chunk (queueing, prompt processing, earlier failed attempts and their
+    backoff) is not generation. Falls back to the whole call when no chunk was timed for it, as on
+    a non-streaming transport."""
+    duration = float(api_duration)
+    first_chunk_at = getattr(agent, "_last_api_first_chunk_at", None)
+    if isinstance(first_chunk_at, bool) or not isinstance(first_chunk_at, (int, float)):
+        return duration
+    if isinstance(api_start_time, bool) or not isinstance(api_start_time, (int, float)):
+        return duration
+    wait = float(first_chunk_at) - float(api_start_time)
+    return duration - wait if 0.0 <= wait <= duration else duration
+
+
+def _append_call_histories(agent: Any, canonical_usage: Any, api_duration: float, api_start_time: float | None) -> None:
+    """One entry per completed call in each rolling history (last 10), kept in step so a reader
+    can pair them by position: whole-call seconds, output tokens, first-chunk-to-end seconds."""
+    with suppress(Exception):
+        hist = getattr(agent, "_api_latency_history", None)
+        if hist is not None:
+            hist.append(float(api_duration))
+        ohist = getattr(agent, "_api_output_history", None)
+        if ohist is not None:
+            ohist.append(int(canonical_usage.output_tokens or 0))
+        ghist = getattr(agent, "_api_generation_history", None)
+        if ghist is not None:
+            ghist.append(_generation_seconds(agent, api_duration, api_start_time))
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
+    api_start_time: float | None = None,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
     and the API-call log line (see module docstring). No-usage responses only
@@ -186,14 +218,7 @@ def record_response_usage(
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
-    # Rolling history for status-bar averages (last 10).
-    with suppress(Exception):
-        hist = getattr(agent, "_api_latency_history", None)
-        if hist is not None:
-            hist.append(float(api_duration))
-        ohist = getattr(agent, "_api_output_history", None)
-        if ohist is not None:
-            ohist.append(int(canonical_usage.output_tokens or 0))
+    _append_call_histories(agent, canonical_usage, api_duration, api_start_time)
 
     _cache_pct = ""
     if canonical_usage.cache_read_tokens and prompt_tokens:
