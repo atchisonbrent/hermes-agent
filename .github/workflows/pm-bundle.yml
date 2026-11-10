@@ -73,9 +73,9 @@ jobs:
           # - label: linux-arm64
           #   runner: blacksmith-32vcpu-ubuntu-2404-arm
           - label: darwin-arm64
-            runner: blacksmith-12vcpu-macos-15
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'blacksmith-12vcpu-macos-15' || 'macos-15' }}
           - label: win32-x64
-            runner: blacksmith-32vcpu-windows-2025
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'blacksmith-32vcpu-windows-2025' || 'windows-2025' }}
           - label: win32-arm64
             runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-arm-core' || 'windows-11-arm' }}
     steps:

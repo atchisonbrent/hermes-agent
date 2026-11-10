@@ -6,7 +6,9 @@ import subprocess
 
 from ruamel.yaml import YAML
 
-_PAID = re.compile(r"(?:ubuntu|windows)-latest-32-(?:arm-)?core")
+# Upstream-only runners: GitHub larger runners provisioned for NousResearch, and Blacksmith
+# runners (they need the Blacksmith app on the owning organisation; a fork's jobs would queue forever).
+_PAID = re.compile(r"(?:ubuntu|windows)-latest-32-(?:arm-)?core|blacksmith-\d+vcpu-[a-z0-9.-]+")
 _GUARD = "github.repository == 'NousResearch/hermes-agent' && '"
 
 
@@ -34,6 +36,7 @@ def test_all_workflow_runner_literals_are_fork_guarded():
 def test_runner_guard_check_rejects_bare_and_wrong_repository_conditions():
     label = 'windows-latest-32-core'
     assert _unguarded({'runner': [label]}) == [label]
+    assert _unguarded({'runs-on': 'blacksmith-4vcpu-ubuntu-2404'}) == ['blacksmith-4vcpu-ubuntu-2404']
     assert _unguarded("${{ github.repository != 'NousResearch/hermes-agent' && '" + label + "' || 'windows-latest' }}") == [label]
     assert _unguarded('${{ ' + _GUARD + label + "' || 'windows-latest' }}") == []
 
