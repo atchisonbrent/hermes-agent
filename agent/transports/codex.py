@@ -843,7 +843,12 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["model"] = wire_model
         if is_codex_backend:
             from agent.codex_model_variants import reconcile_codex_access_program_extra_body
-            extra_body = reconcile_codex_access_program_extra_body(kwargs.get("extra_body"), access_program)
+            # Fork: an explicit ``-daybreak-blue`` route owns the cyber program; otherwise only the
+            # program the session's Daybreak switch sanctioned for this request (upstream's
+            # ``apply_daybreak``; see codex_model_variants.toggled_access_program) survives.
+            # Raw request_overrides programs are still stripped.
+            extra_body = reconcile_codex_access_program_extra_body(
+                kwargs.get("extra_body"), access_program or params.get("toggled_access_program"))
             if extra_body is not None:
                 kwargs["extra_body"] = extra_body
 

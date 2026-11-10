@@ -7,6 +7,7 @@ import pytest
 
 from agent import codex_service_tiers as tiers
 from agent import model_metadata as mm
+from agent.codex_model_variants import toggled_access_program
 from agent.fast_mode import effective_request_overrides
 from agent.transports.codex import ResponsesApiTransport
 
@@ -55,10 +56,13 @@ def agent(account="A", model="gpt-6-sol", daybreak=True, **overrides):
 
 
 def wire(a):
+    overrides = effective_request_overrides(a)
+    # Fork: the transport keeps only a cyber program it is told the switch sanctioned
+    # (agent.chat_completion_helpers._build_codex_kwargs passes the same value).
     return ResponsesApiTransport().build_kwargs(
         model=a.model, messages=[{"role": "user", "content": "hello"}], tools=[],
-        request_overrides=effective_request_overrides(a), provider=a.provider, base_url=a.base_url,
-        is_codex_backend=True,
+        request_overrides=overrides, provider=a.provider, base_url=a.base_url,
+        is_codex_backend=True, toggled_access_program=toggled_access_program(a, overrides),
     )
 
 

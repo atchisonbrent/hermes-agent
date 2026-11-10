@@ -1420,6 +1420,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         except Exception as exc:
             logger.warning("%s⚠️ Failed to sanitize tool schemas for xAI: %s", getattr(agent, "log_prefix", ""), exc)
     ephemeral_out = _consume_ephemeral_max_output(agent)
+    from agent.codex_model_variants import toggled_access_program
     return agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
@@ -1430,7 +1431,8 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         profile_reasoning=agent._endpoint_reasoning_payload() if endpoint.profile_reasoning else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
-        context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
+        context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None),
+        toggled_access_program=toggled_access_program(agent, request_overrides))
 
 
 
