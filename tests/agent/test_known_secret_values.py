@@ -271,6 +271,28 @@ def test_bitwarden_entries_skipped_as_env_vars_are_still_masked(monkeypatch):
     assert redact_sensitive_text("x synthetic-unexported-value") == "x " + MARK.format("service.signing-key")
 
 
+def test_unexported_entries_are_masked_in_a_process_that_starts_from_the_encrypted_cache(monkeypatch, tmp_path):
+    pytest.importorskip("cryptography")
+    from agent.secret_sources import bitwarden as bw
+    listing = [{"key": "SYNTH_API_KEY", "value": "synthetic-exported-value"},
+               {"key": "service.signing-key", "value": "synthetic-unexported-value"}]
+    calls = []
+    monkeypatch.setattr(bw, "run_cli", lambda *a, **k: calls.append(a) or subprocess.CompletedProcess(
+        a, 0, stdout=json.dumps(listing), stderr=""))
+    fetch = dict(access_token="synthetic-access", project_id="project", binary=Path("bws"),
+                 home_path=tmp_path, encrypted_cache_enabled=True)
+    bw.fetch_bitwarden_secrets(**fetch)
+    # A new process: nothing registered, no in-memory entry, only the encrypted file.
+    ksv.clear_known_secrets()
+    ksv.clear_known_secrets(tmp_path)
+    bw._STORE.memory.clear()
+    assert redact_sensitive_text("x synthetic-unexported-value") == "x synthetic-unexported-value"
+    secrets, _warnings = bw.fetch_bitwarden_secrets(**fetch)
+    assert len(calls) == 1 and secrets == {"SYNTH_API_KEY": "synthetic-exported-value"}
+    assert redact_sensitive_text("x synthetic-unexported-value") == "x " + MARK.format("service.signing-key")
+    assert "synthetic-unexported-value" not in (tmp_path / "bws_cache.enc.json").read_text(encoding="utf-8")
+
+
 def test_lookup_is_the_union_of_every_profile_home(tmp_path):
     other = tmp_path / "other-profile"
     other.mkdir()
