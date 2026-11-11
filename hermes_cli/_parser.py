@@ -392,9 +392,9 @@ def build_top_level_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=_EPILOGUE)
     _add_top_level_flags(parser)
     _inherited_flag(parser, "--session-db", default=None, metavar="PATH",
-                    help="Persist sessions to PATH independently of HERMES_HOME configuration.")
+                    help="Retired: refused with an error. Sessions live in the profile's own state.db.")
     subparsers = parser.add_subparsers(dest="command", help="Command to run", metavar="<command>")
     chat_parser = _build_chat_parser(subparsers)
     _inherited_flag(chat_parser, "--session-db", default=argparse.SUPPRESS, metavar="PATH",
-                    help="Persist sessions to PATH independently of HERMES_HOME configuration.")
+                    help="Retired: refused with an error. Sessions live in the profile's own state.db.")
     return parser, subparsers, chat_parser

@@ -1594,19 +1594,11 @@ _CHAT_PASSTHROUGH = (
 )
 
 
-def _pin_session_db(args):
-    """Pin the integration store before any resume/title lookup creates SessionDB."""
-    if session_db := str(getattr(args, "session_db", None) or "").strip():
-        from tools.environments.local import _msys_to_windows_path
-        os.environ["HERMES_SESSION_DB_PATH"] = str(
-            Path(_msys_to_windows_path(session_db)).expanduser().resolve()
-        )
-
-
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    # Fork: pin the --session-db integration store before any launch path resolves sessions.
-    _pin_session_db(args)
+    # Fork: refuse --session-db before any launch path resolves sessions.
+    from hermes_cli.main_session_db import refuse_session_db
+    refuse_session_db(args)
     from hermes_cli.stream_json import stream_json_requested
     # stream-json and the --safe-mode / --ignore-user-config bypass keep the transport client; the
     # classic CLI (interactive, -q/-Q) is main's HermesCLI with a gateway-backed agent (gateway_agent.py).
@@ -2916,8 +2908,9 @@ def _run_oneshot_from_args(args) -> None:
 
     Bypasses cli.py entirely; the transport launcher never returns.
     """
-    # Fork: pin the --session-db integration store before the launcher resolves -c/--resume.
-    _pin_session_db(args)
+    # Fork: refuse --session-db before the launcher resolves -c/--resume.
+    from hermes_cli.main_session_db import refuse_session_db
+    refuse_session_db(args)
     from hermes_cli.gateway_chat_startup import launch_gateway_chat
     sys.exit(launch_gateway_chat(args))
 
