@@ -83,9 +83,11 @@ def reconcile_codex_access_program_extra_body(
     return body
 
 
-def codex_access_program_cache_identity(text: str, model: Optional[str]) -> str:
-    """Keep standard and access-program prompt-cache routing distinct."""
-    program = codex_access_program_for_model(model)
+def codex_access_program_cache_identity(text: str, model: Optional[str],
+                                        access_program: Optional[str] = None) -> str:
+    """Keep standard and access-program prompt-cache routing distinct. ``access_program`` is the
+    program the request actually sends when the session's Daybreak switch added it."""
+    program = access_program or codex_access_program_for_model(model)
     return f"{text}\0access_program={program}" if program else text
 
 

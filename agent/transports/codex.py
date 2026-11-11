@@ -701,7 +701,8 @@ class ResponsesApiTransport(ProviderTransport):
 
         # Fork: reasoning blobs are stamped with the logical model/access-program identity, while the
         # wire slug drives reasoning.context rejection tracking.
-        self._last_issuer_model = _reasoning_model_identity(kwargs.get("identity_model", kwargs.get("model")))
+        self._last_issuer_model = _reasoning_model_identity(
+            kwargs.get("identity_model", kwargs.get("model")), kwargs.get("identity_access_program"))
         self._last_wire_model = _wire_model_identity(kwargs.get("model"))
         endpoint = kwargs.get("endpoint") or responses_endpoint_quirks(kwargs.get("base_url"))
         return _chat_messages_to_responses_input(
@@ -786,6 +787,10 @@ class ResponsesApiTransport(ProviderTransport):
             model, selected_model, model_overridden="model" in request_overrides,
             is_codex_backend=is_codex_backend,
         )
+        # The program this request sends: the explicit route's, else the one the session's Daybreak
+        # switch sanctioned. Request body, reasoning provenance and cache routing all follow it.
+        effective_access_program = access_program or (
+            params.get("toggled_access_program") if is_codex_backend else None)
         wire_model = _wire_model_identity(selected_model) or ""
         kwargs = {
             # ``-900k`` and ``-daybreak-blue`` picker variants are Hermes-side aliases; the backend
@@ -796,7 +801,7 @@ class ResponsesApiTransport(ProviderTransport):
                 payload_messages, is_xai_responses=is_xai_responses, endpoint=endpoint,
                 replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
                 is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
-                identity_model=selected_model,
+                identity_model=selected_model, identity_access_program=effective_access_program,
             ),
             "store": False,
         }
@@ -813,7 +818,8 @@ class ResponsesApiTransport(ProviderTransport):
         # compression rotation; session_id itself stays untouched for transcript isolation.
         _cache_scope = _cache_scope_from_session_id(params.get("cache_scope_id") or session_id)
         from agent.codex_model_variants import codex_access_program_cache_identity
-        cache_instructions = codex_access_program_cache_identity(instructions, selected_model)
+        cache_instructions = codex_access_program_cache_identity(
+            instructions, selected_model, effective_access_program)
         cache_key = _content_cache_key(cache_instructions, response_tools, _cache_scope) or _cache_scope
         # xAI takes prompt_cache_key in extra_body (below); endpoints declaring
         # ``responses_prompt_cache_key=False`` opt out entirely.
@@ -848,7 +854,7 @@ class ResponsesApiTransport(ProviderTransport):
             # ``apply_daybreak``; see codex_model_variants.toggled_access_program) survives.
             # Raw request_overrides programs are still stripped.
             extra_body = reconcile_codex_access_program_extra_body(
-                kwargs.get("extra_body"), access_program or params.get("toggled_access_program"))
+                kwargs.get("extra_body"), effective_access_program)
             if extra_body is not None:
                 kwargs["extra_body"] = extra_body
 

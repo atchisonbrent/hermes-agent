@@ -91,18 +91,20 @@ def _wire_model_identity(model: Any) -> Optional[str]:
     return str(strip_codex_context_variant_suffix(model or "")).strip() or None
 
 
-def _reasoning_model_identity(model: Any) -> Optional[str]:
+def _reasoning_model_identity(model: Any, access_program: Optional[str] = None) -> Optional[str]:
     """Logical model/access identity stamped on encrypted reasoning.
 
     Standard and Daybreak requests share a wire slug but not necessarily an encryption or policy
     domain. Keep them distinct so a mid-session switch cannot replay an opaque blob across modes.
+    ``access_program`` is the program this request actually sends (the session's Daybreak switch
+    adds one without changing the model name); without it the model's own route decides.
     """
     wire_model = _wire_model_identity(model)
     if wire_model is None:
         return None
     from agent.codex_model_variants import codex_access_program_for_model
 
-    access_program = codex_access_program_for_model(model)
+    access_program = access_program or codex_access_program_for_model(model)
     return f"{wire_model}#access_program={access_program}" if access_program else wire_model
 
 
