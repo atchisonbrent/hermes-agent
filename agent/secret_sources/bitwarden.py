@@ -128,9 +128,12 @@ def _derive_encrypted_cache_key(access_token: str, salt: bytes) -> bytes:
 
 
 def _write_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, entry: _CachedFetch,
-                                home_path: Optional[Path] = None) -> None:
+                                home_path: Optional[Path] = None,
+                                unexported: Optional[dict[str, str]] = None) -> None:
     """Persist an AES-GCM encrypted last-good entry atomically (best-effort). The raw
-    token only derives the key; a successful write removes the legacy plaintext cache."""
+    token only derives the key; a successful write removes the legacy plaintext cache.
+    ``unexported`` (entries skipped as env vars) rides along so a process that starts from
+    this cache can still mask them by value."""
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -139,7 +142,8 @@ def _write_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, entr
         serialized_key = _cache_key_str(cache_key)
         key = _derive_encrypted_cache_key(access_token, salt)
         plaintext = json.dumps(
-            {"secrets": entry.secrets, "fetched_at": entry.fetched_at}, separators=(",", ":"),
+            {"secrets": entry.secrets, "fetched_at": entry.fetched_at, **({"unexported": unexported} if unexported else {})},
+            separators=(",", ":"),
         ).encode("utf-8")
         ciphertext = AESGCM(key).encrypt(nonce, plaintext, serialized_key.encode("utf-8"))
         payload = {"version": _ENCRYPTED_CACHE_VERSION, "key": serialized_key,
@@ -167,13 +171,19 @@ def _read_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, max_a
         salt, nonce, ciphertext = (base64.b64decode(str(payload.get(k, "")).encode("ascii"), validate=True)
                                    for k in ("salt", "nonce", "ciphertext"))
         key = _derive_encrypted_cache_key(access_token, salt)
-        entry = entry_from_payload(json.loads(
-            AESGCM(key).decrypt(nonce, ciphertext, serialized_key.encode("utf-8")).decode("utf-8")
-        ))
+        document = json.loads(AESGCM(key).decrypt(nonce, ciphertext, serialized_key.encode("utf-8")).decode("utf-8"))
+        entry = entry_from_payload(document)
         if entry is None:
             return None
         entry_age = time.time() - entry.fetched_at
-        return None if entry_age < 0 or entry_age > max_age_seconds else entry
+        if entry_age < 0 or entry_age > max_age_seconds:
+            return None
+        # This process may never run a live fetch: mask the never-exported entries from the cache too.
+        unexported = document.get("unexported")
+        if isinstance(unexported, dict):
+            register_known_secrets(home_path, {k: v for k, v in unexported.items()
+                                               if isinstance(k, str) and isinstance(v, str)})
+        return entry
     except Exception:
         return None
 
@@ -225,7 +235,8 @@ def fetch_bitwarden_secrets(
                            "`hermes secrets bitwarden setup`.")
 
     try:
-        secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url, home_path)
+        unexported: dict[str, str] = {}
+        secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url, home_path, unexported)
     except RuntimeError as exc:
         # Stale fallback ONLY for transport failures — never AUTH_FAILED / INTERNAL,
         # where old secrets would mask a real problem (without it a fleet sharing
@@ -253,7 +264,7 @@ def fetch_bitwarden_secrets(
             _STORE.memory[cache_key] = entry
         if encrypted_cache_enabled:  # storage policy; max_stale only gates outage reads
             _write_encrypted_disk_cache(cache_key=cache_key, access_token=access_token,
-                                        entry=entry, home_path=home_path)
+                                        entry=entry, home_path=home_path, unexported=unexported)
         else:
             _STORE.disk.write(cache_key, entry, cache_ttl_seconds, home_path)
     return secrets, warnings
@@ -274,7 +285,10 @@ def _summarize_bws_stderr(raw: str) -> str:
 
 
 def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str = "",
-                  home_path: Optional[Path] = None) -> tuple[dict[str, str], list[str]]:
+                  home_path: Optional[Path] = None,
+                  unexported: Optional[dict[str, str]] = None) -> tuple[dict[str, str], list[str]]:
+    """``(secrets, warnings)``. Entries skipped as env vars are registered for masking and added to
+    ``unexported`` when the caller passes one."""
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
     # The bws child intentionally receives the access token; a profile-local
     # fetch must not inherit sibling credentials (source_child_env).
@@ -303,7 +317,7 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
 
     secrets: dict[str, str] = {}
     warnings: list[str] = []
-    unexported: dict[str, str] = {}
+    unexported = {} if unexported is None else unexported
     for item in payload:
         key, value = (item.get("key"), item.get("value")) if isinstance(item, dict) else (None, None)
         if not isinstance(key, str) or not isinstance(value, str):
@@ -313,8 +327,9 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
         else:
             unexported[key] = value
             warnings.append(f"Skipping secret {key!r}: not a valid env-var name")
-    # Never exported, yet just as secret if it turns up in output: mask it by value. Live fetches
-    # only (the caches hold just the exported secrets).
+    # Never exported, yet just as secret if it turns up in output: mask it by value. The encrypted
+    # cache carries them for processes that start from it; the plaintext cache never holds them, so
+    # with that cache they are masked only once a live fetch has run in the process.
     register_known_secrets(home_path, unexported)
     return secrets, warnings
 
