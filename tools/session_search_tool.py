@@ -97,6 +97,11 @@ def _session_meta_block(meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ok(**payload) -> str:
+    # Stored rows are recalled into context: redact each text field like fresh tool output, before
+    # serialising so a marker never lands inside JSON syntax (the stored rows stay raw).
+    from agent.known_secret_values import map_text_leaves
+    from agent.redact import redact_sensitive_text
+    payload = map_text_leaves(payload, lambda text: redact_sensitive_text(text, code_file=True))
     return json.dumps({"success": True, **payload}, ensure_ascii=False)
 
 
@@ -606,7 +611,6 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int |
                    after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
-    from agent.redact import redact_sensitive_text
     from hermes_constants import get_hermes_home
     from hermes_state import SessionDB, format_session_db_unavailable
     from hermes_state_registry import release_or_close
@@ -645,10 +649,9 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int |
             return tool_error(format_session_db_unavailable(), success=False)
         owned_dbs.append(db)
     try:
-        # Stored rows are recalled into context: same redaction as fresh tool output (rows stay raw).
-        return redact_sensitive_text(_dispatch(query, role_filter, limit, db, current_session_id, session_id,
-                                               around_message_id, window, sort, profile, detail, after=after,
-                                               before=before, exclude_session_ids=exclude_session_ids), code_file=True)
+        return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
+                         around_message_id, window, sort, profile, detail,
+                         after=after, before=before, exclude_session_ids=exclude_session_ids)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
