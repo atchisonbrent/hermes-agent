@@ -945,7 +945,8 @@ def test_p3_a_transient_error_on_any_single_read_never_clobbers(op_name, web_app
 def _truncate_mid_scalar(text: str) -> str:
     # A fixed five-byte cut can include the closing quote of a short scalar.
     # Stop immediately after an actual scalar's opening quote instead.
-    scalar = next(t for t in yaml.scan(text) if isinstance(t, yaml.ScalarToken) and t.style == '"')
+    import yaml as pyyaml  # the token scanner is PyYAML's; the hermes_yaml wrapper exposes load/dump only
+    scalar = next(t for t in pyyaml.scan(text) if isinstance(t, pyyaml.ScalarToken) and t.style == '"')
     return text[: scalar.start_mark.index + 1]
 
 

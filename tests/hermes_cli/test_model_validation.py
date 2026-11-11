@@ -498,14 +498,14 @@ class TestValidateCodex900kVariants:
             result = validate_requested_model(alias, "openai-codex")
         assert result["accepted"] is False
         assert result["persist"] is False
-        assert "272K" in result["message"]
+        assert "not a valid large-context variant" in result["message"]
 
     def test_daybreak_suffix_cannot_bypass_ineligible_900k_rejection(self):
         with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
             result = validate_requested_model("gpt-5.5-900k-daybreak-blue", "openai-codex")
         assert result["accepted"] is False
         assert result["persist"] is False
-        assert "272K" in result["message"]
+        assert "not a valid large-context variant" in result["message"]
 
     def test_daybreak_suffix_must_follow_900k_suffix(self):
         with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
