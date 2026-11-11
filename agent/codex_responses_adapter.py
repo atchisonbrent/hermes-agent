@@ -822,15 +822,19 @@ def _native_responses_replay_items(
     from agent.fast_mode import effective_request_overrides
     if not native_compaction_context_management(agent, **route):
         return None
-    # The wire model may be rewritten per request (fast mode); provenance must match what the transport stamps.
-    effective_model = effective_request_overrides(agent).get("model", getattr(agent, "model", None))
+    # The wire model may be rewritten per request (fast mode); provenance must match what the transport
+    # stamps, including the program the session's Daybreak switch adds on the Codex backend.
+    overrides = effective_request_overrides(agent)
+    effective_model = overrides.get("model", getattr(agent, "model", None))
+    from agent.codex_model_variants import toggled_access_program
+    program = toggled_access_program(agent, overrides) if route["is_codex_backend"] else None
     try:
         items = _chat_messages_to_responses_input(
             messages, is_xai_responses=route["is_xai_responses"],
             drop_replay_item_ids=not route["endpoint"].replay_item_ids,
             replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
             current_issuer_kind=_classify_responses_issuer(base_url=getattr(agent, "base_url", None), **route),
-            current_issuer_model=_reasoning_model_identity(effective_model),
+            current_issuer_model=_reasoning_model_identity(effective_model, program),
             native_compaction_eligible=True,
         )
     except Exception:
