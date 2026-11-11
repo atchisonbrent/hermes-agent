@@ -767,6 +767,11 @@ def load_hermes_dotenv(
     if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
         _apply_external_secret_sources(home_path)
     _apply_managed_env(load_pass=load_pass)
+    # Exact-value redaction of the credentials this process now holds (.env, shell, provider keys).
+    # Secret-named keys only: most .env lines are settings. Source values registered in their pass.
+    from agent.known_secret_values import log_uncovered_names, register_known_secrets
+    register_known_secrets(home_path, os.environ, require_secret_name=True)
+    log_uncovered_names(home_path)
 
     # config.yaml owns terminal.*, but the override=True loads above let a stale TERMINAL_ENV=docker in
     # ~/.hermes/.env win on every reload and flip the backend mid-session in long-lived processes.
