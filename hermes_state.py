@@ -212,8 +212,8 @@ def _default_db_path() -> Path:
        import-time snapshot — the established hermetic-test escape hatch) wins.
     2. ``HERMES_SESSION_DB_PATH``, for a process that opens the store itself (an
        operator-started gateway, an embedding integration). The ``--session-db``
-       flag that used to set it is retired, and chat launches refuse the variable:
-       their turns run in the profile's gateway, which does not inherit it.
+       flag that used to set it is retired, and chat launches refuse the variable
+       because they would ignore it: their lookups and their gateway use the profile store.
     3. Otherwise resolve ``get_hermes_home()`` fresh so a runtime
        ``HERMES_HOME`` redirect takes effect regardless of import order.
     """

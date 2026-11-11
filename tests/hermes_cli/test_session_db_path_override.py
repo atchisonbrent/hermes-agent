@@ -204,12 +204,45 @@ main.main()
     assert not target.exists()
 
 
-def test_non_chat_command_keeps_the_database_variable(tmp_path, monkeypatch):
-    """Control: outside chat launches the variable stays usable (an operator-started gateway)."""
-    from argparse import Namespace
-    from hermes_cli.main_session_db import refuse_session_db
+def test_version_does_not_bypass_the_refusal(tmp_path):
+    program = '''
+import os, sys
+from hermes_cli import main
+def ran(*args, **kwargs):
+    raise AssertionError("--version ran before --session-db was refused")
+main.cmd_version = ran
+sys.argv = ["hermes", "--session-db", os.environ["TARGET_DB"], "--version"]
+main.main()
+'''
+    result, _home, _target = _run_dispatch(tmp_path, program)
 
-    monkeypatch.setenv("HERMES_SESSION_DB_PATH", str(tmp_path / "other.db"))
-    refuse_session_db(Namespace(session_db=None))
-    with pytest.raises(SystemExit):
-        refuse_session_db(Namespace(session_db=None), chat_launch=True)
+    assert result.returncode == 2, result.stderr
+    assert "--session-db is no longer supported" in result.stderr
+    assert "AssertionError" not in result.stderr
+
+
+def test_non_chat_command_keeps_the_database_variable(tmp_path):
+    """Control through main(): outside chat launches the variable is not refused, so a gateway
+    the operator starts with it set still reaches its handler."""
+    program = '''
+import sys
+from hermes_cli import main
+main._prepare_agent_startup = lambda args: None
+def handler(args):
+    print("HANDLER-RAN")
+    return 0
+real_parse = main._parse_cli_args
+def parse(parser, subparsers, argv):
+    args = real_parse(parser, subparsers, argv)
+    args.func = handler
+    return args
+main._parse_cli_args = parse
+sys.argv = ["hermes", "gateway", "status"]
+main.main()
+'''
+    result, _home, _target = _run_dispatch(
+        tmp_path, program, extra_env={"HERMES_SESSION_DB_PATH": str(tmp_path / "other.db")})
+
+    assert result.returncode == 0, result.stderr
+    assert "HANDLER-RAN" in result.stdout
+    assert "HERMES_SESSION_DB_PATH" not in result.stderr

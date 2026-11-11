@@ -3418,11 +3418,11 @@ def main():
     args = _parse_cli_args(parser, subparsers, sys.argv[1:])
     _enable_cpu_profile(args)
 
+    from hermes_cli.main_session_db import refuse_session_db
+    refuse_session_db(args)  # Fork: retired for every command, --version included
     if args.version:
         cmd_version(args)
         return
-    from hermes_cli.main_session_db import refuse_session_db
-    refuse_session_db(args)  # Fork: retired for every command, not only the chat paths
 
     # --yolo must be set *before* plugin discovery: tools.approval freezes
     # _YOLO_MODE_FROZEN at import; set later (inside cmd_chat) it does nothing.
