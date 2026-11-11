@@ -174,7 +174,7 @@ def test_empty_session_db_value_is_refused_too(tmp_path, value):
     ("main.cmd_chat", ["chat", "-q", "test"]),
 ])
 def test_chat_launch_refuses_an_inherited_database_variable(tmp_path, dispatch, argv):
-    """The client would read one database while the gateway it starts writes another."""
+    """A chat launch ignores the variable (its gateway owns the store), so it is refused, not dropped."""
     program = _REFUSAL_PROGRAM.replace("ARGV", repr(argv)).replace("DISPATCH", dispatch)
     result, _home, target = _run_dispatch(
         tmp_path, program, extra_env={"HERMES_SESSION_DB_PATH": str(tmp_path / "other.db")})

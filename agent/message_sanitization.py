@@ -689,6 +689,9 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # Vendors that document reasoning_details replay next to reasoning_content.
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
+    # W&B Inference rejects an assistant message that carries ``reasoning`` beside reasoning_content;
+    # it is usually configured as a ``custom`` provider, so its host must match before that row.
+    (frozenset({RC}), frozenset({"wandb"}), ("inference.wandb.ai",)),
     (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
 )
 
