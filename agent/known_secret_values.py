@@ -265,6 +265,14 @@ def scrub_known_secrets(value: Any) -> Any:
     return value if _MATCHER is None else map_text_leaves(value, redact_known_secret_values)
 
 
+def scrub_tool_row(row: dict) -> dict:
+    """Scrub a ``role == "tool"`` row's content in place: the rows an agent provider projects never pass
+    ``make_tool_result_message``. Ids and every other field stay as they are."""
+    if row.get("role") == "tool" and "content" in row:
+        row["content"] = scrub_known_secrets(row["content"])
+    return row
+
+
 def uncovered_names(home=None) -> list[str]:
     """Key names whose value is too short to be matched exactly (names only)."""
     registry = _REGISTRIES.get(_home_key(home))

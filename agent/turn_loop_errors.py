@@ -13,6 +13,7 @@ import os
 import sys
 from typing import Any
 
+from agent.known_secret_values import scrub_known_secrets
 from agent.message_metadata import append_message
 from agent.turn_failure_copy import short_detail, site_copy
 
@@ -137,7 +138,7 @@ def handle_outer_loop_error(
                         "role": "tool",
                         "name": _ra().AIAgent._get_tool_call_name_static(tc),
                         "tool_call_id": tc["id"],
-                        "content": f"Error executing tool: {error_msg}",
+                        "content": scrub_known_secrets(f"Error executing tool: {error_msg}"),
                     })
         break
 

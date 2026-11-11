@@ -680,6 +680,7 @@ def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> 
     gateway re-write would re-INSERT the user turn."""
     if not turn.projected_messages:
         return False
+    from agent.known_secret_values import scrub_tool_row
     from agent.message_metadata import append_message
     projected_messages = turn.projected_messages
     # Turn-start persistence owns the accepted input. Codex's leading user item
@@ -690,7 +691,7 @@ def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> 
             and first.get("content") == submitted_user_text):
         projected_messages = projected_messages[1:]
     for projected_message in projected_messages:
-        append_message(messages, projected_message)
+        append_message(messages, scrub_tool_row(projected_message))  # codex ran these tools, not our executor
     if getattr(agent, "_session_db", None) is None:
         return False
     flush_ok = False

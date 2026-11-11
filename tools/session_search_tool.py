@@ -798,7 +798,14 @@ SESSION_SEARCH_SCHEMA = {
 }
 
 
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_error as _registry_tool_error
+
+
+def tool_error(message, **extra) -> str:
+    """Error bodies echo caller text (a time bound, a profile name): redacted like ``_ok`` payloads."""
+    from agent.redact import redact_sensitive_text
+    return _registry_tool_error(redact_sensitive_text(str(message), code_file=True), **extra)
+
 
 registry.register(
     name="session_search",

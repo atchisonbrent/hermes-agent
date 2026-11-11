@@ -52,7 +52,9 @@ def test_session_search_results_are_masked():
         assert VALUE not in raw and MARK in raw, args
 
 
-def test_cross_profile_recall_masks_the_other_profiles_value(tmp_path, monkeypatch):
+def test_recall_from_another_profile_uses_the_union_lookup(tmp_path, monkeypatch):
+    """A value registered under another profile's home (as that profile's own process or a served scope
+    would) is masked in this profile's recall of that profile's rows. Recall itself registers nothing."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / ".hermes"
     other = home / "profiles" / "recall-target"
@@ -72,9 +74,10 @@ def test_recalled_json_listing_with_a_quoted_value_stays_valid_json():
     ksv.register_known_secrets(None, {'service."cred': quoted})
     _store(home / "state.db", "The signing listing: " + json.dumps([{"key": 'service."cred', "value": quoted}]))
     raw = _search({"session_id": "recall-source"})
-    text = json.dumps(json.loads(raw), ensure_ascii=False)
-    assert quoted not in json.loads(raw)["messages"][1]["content"]
-    assert "«redacted-secret:service._cred»" in text
+    content = json.loads(raw)["messages"][1]["content"]
+    prefix, listing = content.split(": ", 1)
+    assert prefix == "The signing listing"
+    assert json.loads(listing) == [{"key": 'service."cred', "value": "«redacted-secret:service._cred»"}]
 
 
 def test_search_files_results_are_masked(tmp_path):
@@ -84,3 +87,16 @@ def test_search_files_results_are_masked(tmp_path):
     raw = search_tool("signing value", path=str(tmp_path), task_id="known-secret-search")
     assert json.loads(raw)["total_count"] == 1, raw
     assert VALUE not in raw and MARK in raw
+
+
+def test_session_search_error_results_are_redacted():
+    from hermes_constants import get_hermes_home
+    from tools.registry import registry
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    _store(home / "state.db", "nothing secret here")
+    prefixed = "ghp_" + "a1B2c3D4e5" * 4  # a pattern-recognised credential pasted as an argument
+    import tools.session_search_tool  # registers the tool
+    raw = registry.get_entry("session_search").handler({"query": "signing", "after": prefixed})
+    assert json.loads(raw).get("success") is False and "invalid time bound" in raw, raw
+    assert prefixed not in raw

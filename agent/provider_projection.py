@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from agent.known_secret_values import scrub_tool_row
 from agent.message_metadata import append_message
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ def splice_provider_projection(agent: Any, response: Any, messages: list[dict[st
     projected = getattr(response, "hermes_projected_messages", None)
     rows = [m for m in projected if isinstance(m, dict)] if isinstance(projected, list) else []
     for row in rows:
-        append_message(messages, row)
+        append_message(messages, scrub_tool_row(row))  # the provider ran these tools, not our executor
     if rows:
         logger.debug(
             "spliced %d provider-projected transcript row(s) from %s", len(rows), getattr(agent, "provider", "?"),
