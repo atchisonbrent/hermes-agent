@@ -81,11 +81,14 @@ def review_config():
     """Explicit opt-in; malformed configured gates fail closed at the caller."""
     # The general loader can return defaults/last-known-good on parse errors.
     # A persistence authorization gate must not use that fallback.
-    from hermes_cli.config_backend import read_config_doc
+    from hermes_cli.config_backend import ConfigBackendUnavailable, read_config_doc
     try:  # raises like open + fast_safe_load: no last-known-good fallback
         raw = read_config_doc(get_hermes_home() / "config.yaml")
     except FileNotFoundError:
         raw = {}
+    except ConfigBackendUnavailable as exc:
+        # A SystemExit by design; here it must become a refused write, not an aborted turn.
+        raise _ReviewRefusal("Config backend unavailable") from exc
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):

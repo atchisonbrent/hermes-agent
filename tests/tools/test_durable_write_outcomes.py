@@ -104,8 +104,36 @@ def test_review_config_uses_utf8_on_non_utf8_hosts(tmp_path, monkeypatch, enable
         return path_open(path, mode, buffering, encoding, errors, newline)
 
     monkeypatch.setattr(Path, 'open', non_utf8_default)
+    # The config backend reads through the built-in open(), so the non-UTF-8 host default has to
+    # be simulated there as well, or this test never meets the condition it is named for.
+    import builtins
+    real_open = builtins.open
+
+    def ascii_default_open(file, mode='r', *args, **kwargs):
+        if 'b' not in mode and len(args) < 2 and kwargs.get('encoding') is None:
+            kwargs['encoding'] = 'ascii'
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, 'open', ascii_default_open)
+    with pytest.raises(UnicodeDecodeError):  # control: the simulated host really cannot read it
+        with open(config) as handle:
+            handle.read()
     result = wa.review_config()
     assert (result is not None) is enabled
+
+
+def test_unavailable_config_backend_refuses_the_write_instead_of_ending_the_turn(tmp_path, monkeypatch):
+    from hermes_cli import config_backend
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+
+    def unavailable(*args, **kwargs):
+        raise config_backend.ConfigBackendUnavailable('backend down')
+
+    monkeypatch.setattr(config_backend, 'read_config_doc', unavailable)
+    decision = wa.evaluate_gate('memory')  # must not raise SystemExit
+    assert decision.blocked is True
+    assert 'Config backend unavailable' in decision.message
 
 
 def test_completed_receipt_uses_utf8_on_non_utf8_hosts(tmp_path, monkeypatch):
