@@ -204,11 +204,14 @@ class SamplingHandler:
     def _build_llm_call(self, params, resolved_model: str) -> Callable[[], object]:
         """Sampling params -> zero-arg sync ``call_llm`` thunk (run off-loop); server tools are forwarded."""
         from agent.auxiliary_client import call_llm
+        from agent.known_secret_values import scrub_known_secrets
 
         messages = self._convert_messages(params)
         system_prompt = mcp_field(params, "system_prompt", "systemPrompt")
         if system_prompt:
             messages.insert(0, {"role": "system", "content": strip_unicode_tags(str(system_prompt))})
+        # The server's text goes to our LLM: mask known secret values in it, as in any tool result.
+        messages = [{**m, "content": scrub_known_secrets(m["content"])} if "content" in m else m for m in messages]
         max_tokens = min(mcp_field(params, "max_tokens", "maxTokens", self.max_tokens_cap), self.max_tokens_cap)
         server_tools = getattr(params, "tools", None)
         tools = [{"type": "function", "function": {

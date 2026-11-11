@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from agent.known_secret_values import register_known_secrets
 from agent.secret_sources._cache import (
     CachedFetch as _CachedFetch, SecretCache, atomic_write_json, entry_from_payload,
     current_cache_path, fingerprint as _token_fingerprint, remove_cache_file, resolve_cache_home,
@@ -224,7 +225,7 @@ def fetch_bitwarden_secrets(
                            "`hermes secrets bitwarden setup`.")
 
     try:
-        secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
+        secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url, home_path)
     except RuntimeError as exc:
         # Stale fallback ONLY for transport failures — never AUTH_FAILED / INTERNAL,
         # where old secrets would mask a real problem (without it a fleet sharing
@@ -272,7 +273,8 @@ def _summarize_bws_stderr(raw: str) -> str:
     return "; ".join(causes) if causes else text
 
 
-def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str = "") -> tuple[dict[str, str], list[str]]:
+def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str = "",
+                  home_path: Optional[Path] = None) -> tuple[dict[str, str], list[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
     # The bws child intentionally receives the access token; a profile-local
     # fetch must not inherit sibling credentials (source_child_env).
@@ -301,6 +303,7 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
 
     secrets: dict[str, str] = {}
     warnings: list[str] = []
+    unexported: dict[str, str] = {}
     for item in payload:
         key, value = (item.get("key"), item.get("value")) if isinstance(item, dict) else (None, None)
         if not isinstance(key, str) or not isinstance(value, str):
@@ -308,7 +311,11 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
         if _is_valid_env_name(key):
             secrets[key] = value
         else:
+            unexported[key] = value
             warnings.append(f"Skipping secret {key!r}: not a valid env-var name")
+    # Never exported, yet just as secret if it turns up in output: mask it by value. Live fetches
+    # only (the caches hold just the exported secrets).
+    register_known_secrets(home_path, unexported)
     return secrets, warnings
 
 

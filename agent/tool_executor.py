@@ -35,6 +35,7 @@ from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wordi
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
+from agent.known_secret_values import scrub_known_secrets
 from agent.lsp import deferred as lsp_deferred
 from agent.prompt_cache_scope import conversation_id
 from agent.inline_tool_executors import (
@@ -1117,7 +1118,8 @@ def _commit_tool_result(
     _status_suffix = " (error)" if is_error else ""
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
-    persisted_result = function_result
+    # Known secret values go before the spill and the size decision: a preview cut must not split one.
+    persisted_result = scrub_known_secrets(function_result)
     if _is_multimodal_tool_result(persisted_result):
         persisted_result = _persist_multimodal_text_parts(
             persisted_result, function_name, tool_call_id, get_active_env(effective_task_id), budget,

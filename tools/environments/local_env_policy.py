@@ -4,6 +4,9 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 
 import functools
 import os
+import sys
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
@@ -49,6 +52,9 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "HERMES_ANON_API_SECRET", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
     "HERMES_DASHBOARD_BASIC_AUTH_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
     "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_MEET_REALTIME_KEY",
+    # The bundled secret sources' access tokens (``SecretSource.default_token_env``): one token lists
+    # every value in the store (``bws secret list``). Each source hands it to its own CLI explicitly.
+    "BWS_ACCESS_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN",
 })
 
 
@@ -133,17 +139,17 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _PROVIDER_ENV_BLOCKLIST | _ADAPTER_SECRET_ENV
 _HOME_ADAPTER_SECRET_CACHE: dict[str, tuple] = {}
 
 
-def _home_adapter_secret_env() -> frozenset:
-    """Secrets declared by the bound profile's own user-installed platform plugins. Per home, not
-    process-wide: under multiplex profile A's plugin must neither strip a same-named value from
-    profile B's children nor be missing from A's. Cached per home and keyed on every manifest's
+def _home_adapter_secret_env(home: Optional[Path] = None) -> frozenset:
+    """Secrets declared by *home*'s (default: the bound profile's) own user-installed platform
+    plugins. Per home, not process-wide: under multiplex profile A's plugin must neither strip a
+    same-named value from profile B's children nor be missing from A's. Cached per home and keyed on every manifest's
     file signature, so an edit, replacement or deletion takes effect on the next spawn. A plugin
     manifest under ``plugins/platforms/`` that cannot be read raises. A partial scan (a plugin dir
     or flat manifest unreadable or unparsable) keeps the names this home already had and is not
     cached, so a failed discovery never releases a known denial and recovery is seen at once."""
     from hermes_cli.config import platform_manifest_secret_scan, platform_manifest_stamp
     from hermes_constants import get_hermes_home, hermes_home_key
-    home = get_hermes_home()
+    home = Path(home) if home is not None else get_hermes_home()
     key, stamp = hermes_home_key(home), platform_manifest_stamp(home)
     cached = _HOME_ADAPTER_SECRET_CACHE.get(key)
     if cached is None or cached[0] is None or cached[0] != stamp:
@@ -183,7 +189,17 @@ def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None
     upper = name.upper()
     if name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST:
         return True
+    if upper in _configured_source_token_env():
+        return True
     return upper in (_registered_adapter_secret_env() if _registered is None else _registered)
+
+
+def _configured_source_token_env() -> frozenset:
+    """Token variables enabled secret sources are configured with (a custom ``access_token_env``),
+    recorded by ``apply_all`` in any profile; the bundled defaults are in the static list. Read only
+    if the source registry is loaded: no source has run otherwise, and this is called per variable."""
+    registry = sys.modules.get("agent.secret_sources.registry")
+    return registry.configured_token_env_names() if registry is not None else frozenset()
 
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
@@ -433,3 +449,33 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
 }) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True)  # every declared adapter secret is Tier 1
 _ALWAYS_STRIP_FOLDED: frozenset[str] = frozenset(k.upper() for k in _ALWAYS_STRIP_KEYS)
+
+
+def _declared_non_secret_env() -> frozenset:
+    from hermes_cli.config import OPTIONAL_ENV_VARS
+    return frozenset(name.upper() for name, meta in OPTIONAL_ENV_VARS.items() if not meta.get("password"))
+
+
+# Blocklisted for profile isolation but not secret: an organisation id and a credential file's path.
+_DECLARED_NON_SECRET_ENV = _declared_non_secret_env() | {
+    "OPENAI_ORGANIZATION", "OPENAI_ORG_ID", "GOOGLE_APPLICATION_CREDENTIALS"}
+
+
+def is_non_secret_env(name: str) -> bool:
+    """A setting or authorization gate, not a credential, whatever its name or blocklist entry says."""
+    upper = name.upper()
+    return upper in _DECLARED_NON_SECRET_ENV or any(m in upper for m in _PROFILE_GATE_ENV_MARKERS)
+
+
+def credential_env_values(environ: Mapping[str, str], home: Optional[Path] = None) -> dict[str, str]:
+    """The entries of *environ* this policy strips from model-run children as credentials: Tier 1,
+    the provider/tool blocklist (static part and configured secret-source tokens), *home*'s own
+    platform plugins' secrets, Hermes-internal secrets. Declared non-secret settings and authorization
+    gates (:func:`is_non_secret_env`) ride on the blocklist for profile isolation, not secrecy, and are
+    left out. ``agent.known_secret_values`` masks these values in output: what is a credential for
+    stripping is one for masking. Adapter secrets known only to the platform registry are not
+    consulted (no gateway import at startup)."""
+    home_secrets = _home_adapter_secret_env(home)
+    return {name: value for name, value in environ.items() if not is_non_secret_env(name) and (
+        name.upper() in _ALWAYS_STRIP_FOLDED or _is_hermes_internal_secret(name)
+        or _is_provider_env_blocklisted(name, home_secrets))}

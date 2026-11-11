@@ -97,6 +97,11 @@ def _session_meta_block(meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ok(**payload) -> str:
+    # Stored rows are recalled into context: redact each text field like fresh tool output, before
+    # serialising so a marker never lands inside JSON syntax (the stored rows stay raw).
+    from agent.known_secret_values import map_text_leaves
+    from agent.redact import redact_sensitive_text
+    payload = map_text_leaves(payload, lambda text: redact_sensitive_text(text, code_file=True))
     return json.dumps({"success": True, **payload}, ensure_ascii=False)
 
 
@@ -793,7 +798,14 @@ SESSION_SEARCH_SCHEMA = {
 }
 
 
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_error as _registry_tool_error
+
+
+def tool_error(message, **extra) -> str:
+    """Error bodies echo caller text (a time bound, a profile name): redacted like ``_ok`` payloads."""
+    from agent.redact import redact_sensitive_text
+    return _registry_tool_error(redact_sensitive_text(str(message), code_file=True), **extra)
+
 
 registry.register(
     name="session_search",

@@ -43,6 +43,10 @@ _SCOPED_SOURCES: dict[str, dict[str, SecretSource]] = _registry._scoped_provider
 _BUILTINS_LOADED = False
 _REGISTRY_LOCK = _registry._lock
 
+# Token variable names of every source enabled in any profile (names only; the child-environment
+# policy strips them like the bundled defaults it lists statically).
+_TOKEN_ENV_NAMES: set[str] = set()
+
 # (module, class, label) for the bundled sources, in registration order.
 _BUILTIN_SOURCES = (
     ("agent.secret_sources.bitwarden", "BitwardenSource", "Bitwarden"),
@@ -198,6 +202,7 @@ def _reset_registry_for_tests() -> None:
     with _REGISTRY_LOCK:
         _registry.reset_for_tests()
         _SOURCE_ORIGINS.clear()
+        _TOKEN_ENV_NAMES.clear()
         _BUILTINS_LOADED = False
 
 
@@ -268,6 +273,11 @@ def _ordered_enabled_sources(secrets_cfg: dict, *, scope: Optional[str] = None) 
         except Exception:
             logger.warning("Secret source '%s' is_enabled() raised; skipping", name, exc_info=True)
     return enabled
+
+
+def configured_token_env_names() -> frozenset:
+    """Upper-cased token variable names of every source :func:`apply_all` found enabled."""
+    return frozenset(_TOKEN_ENV_NAMES)
 
 
 def enabled_source_names(secrets_cfg: dict, home_path: Path) -> frozenset:
@@ -387,6 +397,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     enabled = _ordered_enabled_sources(secrets_cfg, scope=hermes_home_key(home_path))
     if not enabled:
         return report
+    _TOKEN_ENV_NAMES.update(n.upper() for n in (_token_env(s, _section(secrets_cfg, s.name)) for s in enabled) if n)
 
     preserve_raw = secrets_cfg.get("preserve_existing")
     preserve = frozenset(n.strip() for n in preserve_raw if isinstance(n, str) and n.strip()
@@ -414,4 +425,20 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     applier = _Applier(env, report, protected, preserve)
     for source, cfg, result in fetches:
         applier.apply_source(source, cfg, result, profile, supplied_directly)
+    # Exact-value redaction: every value a source supplied (applied or not; an opaque value printed
+    # in tool output matches no pattern) and the access token each source authenticates with.
+    from agent.known_secret_values import register_known_secrets
+    for source, cfg, result in fetches:
+        register_known_secrets(home_path, result.secrets)
+        if token_env := _token_env(source, cfg):  # its own batch: a fetched value under that name is kept too
+            register_known_secrets(home_path, {token_env: env.get(token_env, "")})
     return report
+
+
+def _token_env(source: SecretSource, cfg: dict) -> Optional[str]:
+    """``source.token_env(cfg)``; a third-party source that raises is logged and has none."""
+    try:
+        return source.token_env(cfg)
+    except Exception:  # health: allow BLE001 -- one source's bad config must not stop the others' registration
+        logger.warning("Secret source %s: token variable name unavailable", source.name, exc_info=True)
+        return None

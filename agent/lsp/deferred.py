@@ -100,7 +100,10 @@ def pop_notes(*owners: Optional[str]) -> list[tuple[str, str]]:
             notes = _QUEUED.pop(owner, None)
             if notes:
                 out.extend((path, note.text) for path, note in notes.items())
-    return out
+    # Both deliveries (the next tool result, the turn-end message) take notes here, after their row is
+    # built: a diagnostic can quote a credential literal.
+    from agent.known_secret_values import redact_known_secret_values
+    return [(path, redact_known_secret_values(text)) for path, text in out]
 
 
 def track_pending(owner: str) -> object:

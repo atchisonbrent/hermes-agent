@@ -432,6 +432,8 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     from hermes_cli.managed_scope import load_managed_env  # fail-open: {} when no managed scope
 
     secrets.update((k, v) for k, v in load_managed_env().items() if not _is_global_env(k))
+    from agent.known_secret_values import register_environment_credentials  # a routed .env never reaches os.environ
+    register_environment_credentials(hermes_home, secrets)
     return secrets
 
 
