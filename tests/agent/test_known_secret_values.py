@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import random
+import re
 import shlex
 import string
 import subprocess
@@ -99,23 +100,53 @@ def test_source_access_token_is_registered(synthetic_source):
         "token " + MARK.format("SYNTHETIC_SOURCE_TOKEN")
 
 
-def test_encoded_forms_are_masked():
+def test_encoded_forms_are_masked_whole():
     value = 'synthetic/secret+value=with "quote" é~?'
     ksv.register_known_secrets(None, {"SERVICE_PASSWORD": value})
     raw = value.encode("utf-8")
+    std, url = base64.b64encode(raw).decode(), base64.urlsafe_b64encode(raw).decode()
     forms = {
         "json": json.dumps(value)[1:-1],
         "url": quote(value, safe=""),
-        "base64": base64.b64encode(raw).decode(),
-        "base64url": base64.urlsafe_b64encode(raw).decode(),
-        # `echo "$X" | base64` encodes a trailing newline: the whole-group prefix still matches.
-        "base64-newline": base64.b64encode(raw + b"\n").decode(),
+        "url-lowercase-hex": re.sub(r"%[0-9A-F]{2}", lambda m: m.group(0).lower(), quote(value, safe="")),
+        "base64": std, "base64-unpadded": std.rstrip("="),
+        "base64url": url, "base64url-unpadded": url.rstrip("="),
     }
-    assert forms["base64"] != forms["base64url"]
+    assert std != url and std.endswith("=") and forms["url"] != forms["url-lowercase-hex"]
     for label, form in forms.items():
-        out = redact_sensitive_text(f"<{form}>")
-        assert form not in out, label
-        assert MARK.format("SERVICE_PASSWORD") in out, label
+        assert redact_sensitive_text(f"<{form}>") == f"<{MARK.format('SERVICE_PASSWORD')}>", label
+    # `echo "$X" | base64` encodes a trailing newline: all but the last (mixed) group is masked.
+    piped = base64.b64encode(raw + b"\n").decode()
+    out = redact_sensitive_text(piped)
+    assert out.startswith(MARK.format("SERVICE_PASSWORD")) and piped.endswith(out[len(MARK.format("SERVICE_PASSWORD")):])
+    assert len(out) - len(MARK.format("SERVICE_PASSWORD")) <= 4
+
+
+def test_short_derived_forms_are_not_registered():
+    ksv.register_known_secrets(None, {"SHORT_TOKEN": "q7Rk2vLp"})  # 8 characters: raw form only
+    other = base64.b64encode(b"q7Rk2vXX").decode()  # shares the encoding of the first six bytes
+    assert redact_sensitive_text(f"q7Rk2vLp {other}") == f"{MARK.format('SHORT_TOKEN')} {other}"
+
+
+def test_known_values_are_masked_with_redact_secrets_off(monkeypatch):
+    from agent import redact
+    monkeypatch.setattr(redact, "_redact_enabled", lambda: False)
+    ksv.register_known_secrets(None, {"SERVICE_TOKEN": "synthetic-always-masked"})
+    prefixed = "ghp_" + "a1B2c3D4e5" * 4  # a pattern-only secret: left alone with redaction off
+    assert redact_sensitive_text(f"synthetic-always-masked {prefixed}") == f"{MARK.format('SERVICE_TOKEN')} {prefixed}"
+
+
+def test_unencodable_value_is_skipped_without_raising(caplog):
+    with caplog.at_level("WARNING", logger=ksv.__name__):
+        ksv.register_known_secrets(None, {"BROKEN_TOKEN": "synthetic\udcffvalue", "SERVICE_TOKEN": "synthetic-good-value"})
+    assert redact_sensitive_text("synthetic-good-value") == MARK.format("SERVICE_TOKEN")
+    assert any("BROKEN_TOKEN" in r.getMessage() for r in caplog.records)
+
+
+def test_marker_names_are_inert_in_json():
+    ksv.register_known_secrets(None, {'service."cred\\key': "synthetic-quoted-key-value"})
+    out = redact_sensitive_text(json.dumps({"v": "synthetic-quoted-key-value"}))
+    assert json.loads(out) == {"v": "«redacted-secret:service._cred_key»"}
 
 
 def test_longer_value_containing_a_shorter_one_is_masked_whole():
@@ -165,11 +196,14 @@ def test_bitwarden_entries_skipped_as_env_vars_are_still_masked(monkeypatch):
     assert redact_sensitive_text("x synthetic-unexported-value") == "x " + MARK.format("service.signing-key")
 
 
-def test_registries_are_per_profile_home(tmp_path):
+def test_lookup_is_the_union_of_every_profile_home(tmp_path):
     other = tmp_path / "other-profile"
     other.mkdir()
     ksv.register_known_secrets(other, {"OTHER_TOKEN": "synthetic-other-profile-value"})
-    assert redact_sensitive_text("synthetic-other-profile-value") == "synthetic-other-profile-value"
+    ksv.register_known_secrets(other, {"OTHER_PIN": "1234"})
+    # Masked here too: recalled rows and timer threads do not always run under the owning profile.
+    assert redact_sensitive_text("synthetic-other-profile-value") == MARK.format("OTHER_TOKEN")
+    assert ksv.uncovered_names() == [] and ksv.uncovered_names(other) == ["OTHER_PIN"]
     token = set_hermes_home_override(other)
     try:
         assert redact_sensitive_text("synthetic-other-profile-value") == MARK.format("OTHER_TOKEN")
@@ -180,32 +214,58 @@ def test_registries_are_per_profile_home(tmp_path):
 def test_unmatched_text_is_returned_unchanged_and_cheaply():
     rnd = random.Random(7)
     alphabet = string.ascii_letters + string.digits
-    ksv.register_known_secrets(None, {
-        f"SYNTH_{i}_TOKEN": "".join(rnd.choice(alphabet) for _ in range(rnd.randint(16, 64))) for i in range(300)})
+    values = {f"SYNTH_{i}_TOKEN": "".join(rnd.choice(alphabet) for _ in range(rnd.randint(16, 64))) for i in range(300)}
+    ksv.register_known_secrets(None, values)
     text = "".join(rnd.choice(alphabet + ' \n{}":,') for _ in range(100_000))
     start = time.perf_counter()
     out = ksv.redact_known_secret_values(text)
     elapsed = time.perf_counter() - start
-    assert out is text
+    assert out == text
     assert elapsed < 2.0  # one regex pass; ~20 ms on a laptop for this input
+    # The same matcher does mask: a no-op scrub cannot pass this test.
+    assert ksv.redact_known_secret_values(text + values["SYNTH_7_TOKEN"]) == text + MARK.format("SYNTH_7_TOKEN")
 
 
-class TestDotenvValues:
-    TOKEN, SETTING = "synthetic-dotenv-credential", "synthetic-display-setting"
+class TestEnvironmentCredentials:
+    """The environment feed registers what the child-environment policy strips as a credential and
+    the provider keys config names via ``key_env``; nothing by name keyword alone."""
+
+    PROVIDER, CUSTOM, SETTING = "synthetic-provider-credential", "synthetic-custom-endpoint-key", "synthetic-display-setting"
 
     @pytest.fixture
     def loaded(self, monkeypatch):
         from hermes_cli import env_loader
         home = get_hermes_home()
         home.mkdir(parents=True, exist_ok=True)
-        (home / ".env").write_text(
-            f"SYNTH_SERVICE_TOKEN={self.TOKEN}\nSYNTH_DISPLAY_LABEL={self.SETTING}\n", encoding="utf-8")
-        for name in ("SYNTH_SERVICE_TOKEN", "SYNTH_DISPLAY_LABEL"):
+        (home / "config.yaml").write_text("model:\n  key_env: SYNTH_ENDPOINT_KEY\n", encoding="utf-8")
+        entries = {
+            "OPENROUTER_API_KEY": self.PROVIDER,  # on the provider blocklist
+            "SYNTH_ENDPOINT_KEY": self.CUSTOM,  # named by model.key_env
+            "SYNTH_DISPLAY_LABEL": self.SETTING,  # ordinary setting
+            "SSH_AUTH_SOCK": "/tmp/synthetic-agent/agent.sock",  # secret-ish name, path value
+            "MAX_TOKENS": "16000000",  # secret-ish name, numeric value
+            "OPENAI_BASE_URL": "https://llm.example.invalid/v1",  # blocklisted, exempt suffix
+            "TELEGRAM_HOME_CHANNEL": "-100123456789",  # blocklisted, declared non-secret
+        }
+        (home / ".env").write_text("".join(f"{k}={v}\n" for k, v in entries.items()), encoding="utf-8")
+        for name in entries:
             monkeypatch.setenv(name, "")  # restored (removed) after the test
         env_loader.reset_secret_source_cache()
         env_loader.load_hermes_dotenv(hermes_home=home)
+        return entries
 
-    def test_secret_named_value_is_masked_in_a_non_env_dump_command(self, loaded):
-        output = _terminal_result(_python_command(
-            "import os; print(os.environ['SYNTH_SERVICE_TOKEN'], os.environ['SYNTH_DISPLAY_LABEL'])"))
-        assert output == f"{MARK.format('SYNTH_SERVICE_TOKEN')} {self.SETTING}"
+    def test_credentials_are_masked_in_a_non_env_dump_command(self, loaded):
+        # The policy strips these variables from the child, so the command prints them from a file.
+        dump = get_hermes_home() / "app-settings.txt"
+        dump.write_text(f"{self.PROVIDER} {self.CUSTOM} {self.SETTING}", encoding="utf-8")
+        output = _terminal_result(_python_command("import sys; print(open(sys.argv[1]).read())", str(dump)))
+        assert output == f"{MARK.format('OPENROUTER_API_KEY')} {MARK.format('SYNTH_ENDPOINT_KEY')} {self.SETTING}"
+
+    def test_settings_paths_and_numbers_are_not_registered(self, loaded):
+        for name in ("SYNTH_DISPLAY_LABEL", "SSH_AUTH_SOCK", "MAX_TOKENS", "OPENAI_BASE_URL", "TELEGRAM_HOME_CHANNEL"):
+            assert redact_sensitive_text(f"<{loaded[name]}>") == f"<{loaded[name]}>", name
+
+    def test_unencodable_environment_value_does_not_abort_registration(self):
+        ksv.register_environment_credentials(get_hermes_home(), {
+            "OPENROUTER_API_KEY": "synthetic\udcffcredential", "GROQ_API_KEY": "synthetic-groq-credential"})
+        assert redact_sensitive_text("synthetic-groq-credential") == MARK.format("GROQ_API_KEY")

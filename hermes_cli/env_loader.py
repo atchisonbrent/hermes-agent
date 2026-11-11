@@ -764,14 +764,17 @@ def load_hermes_dotenv(
     # install before importing this module. Do not remap native secret-source dependencies in that same
     # updater process or the self-lock preflight will recreate the marker and exit 2 again. Dotenv and
     # managed env still load in both cases; only external source resolution is unnecessary for the updater.
-    if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
+    external = load_external_secrets and not _early_recovery._should_skip_external_secret_sources()
+    if external:
         _apply_external_secret_sources(home_path)
     _apply_managed_env(load_pass=load_pass)
-    # Exact-value redaction of the credentials this process now holds (.env, shell, provider keys).
-    # Secret-named keys only: most .env lines are settings. Source values registered in their pass.
-    from agent.known_secret_values import log_uncovered_names, register_known_secrets
-    register_known_secrets(home_path, os.environ, require_secret_name=True)
-    log_uncovered_names(home_path)
+    # Exact-value redaction of the credentials this process now holds (.env, shell, provider keys);
+    # source values were registered in their own pass. Same updater gate: the child-env policy this
+    # reads imports native extensions the updater must not map.
+    if external:
+        from agent.known_secret_values import log_uncovered_names, register_environment_credentials
+        register_environment_credentials(home_path, dict(os.environ))
+        log_uncovered_names(home_path)
 
     # config.yaml owns terminal.*, but the override=True loads above let a stale TERMINAL_ENV=docker in
     # ~/.hermes/.env win on every reload and flip the backend mid-session in long-lived processes.

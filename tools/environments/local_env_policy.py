@@ -5,6 +5,7 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 import functools
 import os
 import sys
+from collections.abc import Mapping
 from typing import Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
@@ -447,3 +448,29 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
 }) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True)  # every declared adapter secret is Tier 1
 _ALWAYS_STRIP_FOLDED: frozenset[str] = frozenset(k.upper() for k in _ALWAYS_STRIP_KEYS)
+
+
+def _declared_non_secret_env() -> frozenset:
+    from hermes_cli.config import OPTIONAL_ENV_VARS
+    return frozenset(name.upper() for name, meta in OPTIONAL_ENV_VARS.items() if not meta.get("password"))
+
+
+_DECLARED_NON_SECRET_ENV = _declared_non_secret_env()
+
+
+def credential_env_values(environ: Mapping[str, str]) -> dict[str, str]:
+    """The entries of *environ* this policy strips from model-run children as credentials: Tier 1,
+    the provider/tool blocklist (static part and configured secret-source tokens), Hermes-internal
+    secrets. Declared non-secret settings (``password: False``) and authorization gates ride on the
+    blocklist for profile isolation, not secrecy, and are left out. ``agent.known_secret_values``
+    masks these values in output: what is a credential for stripping is one for masking. Adapter
+    secrets known only to the platform registry are not consulted (no gateway import at startup)."""
+    out = {}
+    for name, value in environ.items():
+        upper = name.upper()
+        if upper in _DECLARED_NON_SECRET_ENV or any(m in upper for m in _PROFILE_GATE_ENV_MARKERS):
+            continue
+        if (upper in _ALWAYS_STRIP_FOLDED or _is_hermes_internal_secret(name)
+                or _is_provider_env_blocklisted(name, frozenset())):
+            out[name] = value
+    return out

@@ -428,7 +428,6 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     # in tool output matches no pattern) and the access token each source authenticates with.
     from agent.known_secret_values import register_known_secrets
     for source, cfg, result in fetches:
-        register_known_secrets(home_path, result.secrets)
-        if token_env := source.token_env(cfg):
-            register_known_secrets(home_path, {token_env: env.get(token_env, "")})
+        token_env = source.token_env(cfg)
+        register_known_secrets(home_path, {**result.secrets, **({token_env: env.get(token_env, "")} if token_env else {})})
     return report
