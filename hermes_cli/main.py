@@ -1596,9 +1596,8 @@ _CHAT_PASSTHROUGH = (
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    # Fork: refuse --session-db before any launch path resolves sessions.
     from hermes_cli.main_session_db import refuse_session_db
-    refuse_session_db(args)
+    refuse_session_db(args, chat_launch=True)  # Fork: before any launch path resolves sessions
     from hermes_cli.stream_json import stream_json_requested
     # stream-json and the --safe-mode / --ignore-user-config bypass keep the transport client; the
     # classic CLI (interactive, -q/-Q) is main's HermesCLI with a gateway-backed agent (gateway_agent.py).
@@ -2908,9 +2907,8 @@ def _run_oneshot_from_args(args) -> None:
 
     Bypasses cli.py entirely; the transport launcher never returns.
     """
-    # Fork: refuse --session-db before the launcher resolves -c/--resume.
     from hermes_cli.main_session_db import refuse_session_db
-    refuse_session_db(args)
+    refuse_session_db(args, chat_launch=True)  # Fork: before any launch path resolves sessions
     from hermes_cli.gateway_chat_startup import launch_gateway_chat
     sys.exit(launch_gateway_chat(args))
 
@@ -3423,6 +3421,8 @@ def main():
     if args.version:
         cmd_version(args)
         return
+    from hermes_cli.main_session_db import refuse_session_db
+    refuse_session_db(args)  # Fork: retired for every command, not only the chat paths
 
     # --yolo must be set *before* plugin discovery: tools.approval freezes
     # _YOLO_MODE_FROZEN at import; set later (inside cmd_chat) it does nothing.
