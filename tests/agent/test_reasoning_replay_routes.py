@@ -44,6 +44,7 @@ def _wire(provider, base_url, model="m", rejected=()):
     ("novita", "https://api.novita.ai/openai/v1", "m", {"reasoning_content", "reasoning_details"}),
     ("ollama-cloud", "https://ollama.com/v1", "m", {"reasoning_content", "reasoning"}),
     ("custom", "http://127.0.0.1:8080/v1", "m", {"reasoning_content", "reasoning"}),
+    ("custom", "https://api.inference.wandb.ai/v1", "m", {"reasoning_content"}),
     # everyone else: the de-facto standard alias
     ("zai", "https://api.z.ai/api/paas/v4", "glm-5.3", {"reasoning_content"}),
     ("openai-api", "https://api.openai.com/v1", "gpt-5", {"reasoning_content"}),

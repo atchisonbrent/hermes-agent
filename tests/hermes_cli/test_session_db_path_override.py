@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 def test_session_db_path_override_separates_state_from_hermes_home(tmp_path, monkeypatch):
     import hermes_state
@@ -87,8 +89,7 @@ def test_top_level_oneshot_parser_accepts_session_db_path(tmp_path):
     assert args.session_db == str(target)
 
 
-def test_oneshot_dispatch_pins_database_before_resume_lookup(tmp_path):
-    """Exercise dispatch and real SessionDB without calling a model."""
+def _run_dispatch(tmp_path, program, extra_env=None):
     import os
     import subprocess
     import sys
@@ -96,27 +97,152 @@ def test_oneshot_dispatch_pins_database_before_resume_lookup(tmp_path):
     home = tmp_path / "isolated"
     target = tmp_path / "retained" / "state.db"
     env = {"HOME": str(tmp_path), "HERMES_HOME": str(home),
-           "PATH": os.environ["PATH"], "TARGET_DB": str(target)}
-    program = '''
-import os
-from pathlib import Path
-from hermes_cli import main
-from hermes_cli._parser import build_top_level_parser
-from hermes_state import SessionDB
-parser, _, _ = build_top_level_parser()
-args = parser.parse_args(["--session-db", os.environ["TARGET_DB"], "-z", "test"])
-def resolve(args, use_tui):
-    assert os.environ.get("HERMES_SESSION_DB_PATH") == os.environ["TARGET_DB"]
-def run(*args, **kwargs):
-    db = SessionDB()
-    db.create_session("oneshot-override", source="cli", model="test")
-    db.close()
-main._resolve_chat_session_args = resolve
-main._run_and_exit_oneshot = run
-main._run_oneshot_from_args(args)
-assert Path(os.environ["TARGET_DB"]).is_file()
-assert not (Path(os.environ["HERMES_HOME"]) / "state.db").exists()
-'''
+           "PATH": os.environ["PATH"], "TARGET_DB": str(target), **(extra_env or {})}
     result = subprocess.run([sys.executable, "-c", program], env=env,
                             capture_output=True, text=True, timeout=30, check=False)
+    return result, home, target
+
+
+_REFUSAL_PROGRAM = '''
+import os
+from hermes_cli import main
+from hermes_cli import gateway_chat_startup
+from hermes_cli._parser import build_top_level_parser
+def launched(*args, **kwargs):
+    raise AssertionError("a launch path ran before --session-db was refused")
+gateway_chat_startup.launch_gateway_chat = launched
+main._resolve_chat_session_args = launched
+parser, _, _ = build_top_level_parser()
+args = parser.parse_args(ARGV)
+DISPATCH(args)
+'''
+
+
+def test_oneshot_dispatch_refuses_session_db_before_any_launch(tmp_path):
+    """The gateway owns the profile's database, so a client-side pin must fail closed."""
+    program = (_REFUSAL_PROGRAM
+               .replace("ARGV", '["--session-db", os.environ["TARGET_DB"], "-z", "test"]')
+               .replace("DISPATCH", "main._run_oneshot_from_args"))
+    result, home, target = _run_dispatch(tmp_path, program)
+
+    assert result.returncode == 2, result.stderr
+    assert "--session-db is no longer supported" in result.stderr
+    assert "AssertionError" not in result.stderr
+    assert not target.exists()
+    assert not (home / "state.db").exists()
+
+
+def test_chat_dispatch_refuses_session_db_before_any_launch(tmp_path):
+    program = (_REFUSAL_PROGRAM
+               .replace("ARGV", '["chat", "--session-db", os.environ["TARGET_DB"], "-q", "test"]')
+               .replace("DISPATCH", "main.cmd_chat"))
+    result, home, target = _run_dispatch(tmp_path, program)
+
+    assert result.returncode == 2, result.stderr
+    assert "--session-db is no longer supported" in result.stderr
+    assert "AssertionError" not in result.stderr
+    assert not target.exists()
+    assert not (home / "state.db").exists()
+
+
+def test_dispatch_without_session_db_reaches_the_launcher(tmp_path):
+    """Control: the refusal is tied to the flag, not to one-shot dispatch itself."""
+    program = (_REFUSAL_PROGRAM
+               .replace("ARGV", '["-z", "test"]')
+               .replace("DISPATCH", "main._run_oneshot_from_args"))
+    result, _home, _target = _run_dispatch(tmp_path, program)
+
+    assert result.returncode == 1
+    assert "a launch path ran before --session-db was refused" in result.stderr
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_empty_session_db_value_is_refused_too(tmp_path, value):
+    """Presence of the flag is what is retired, not a particular value."""
+    program = (_REFUSAL_PROGRAM
+               .replace("ARGV", repr(["--session-db", value, "-z", "test"]))
+               .replace("DISPATCH", "main._run_oneshot_from_args"))
+    result, _home, _target = _run_dispatch(tmp_path, program)
+
+    assert result.returncode == 2, result.stderr
+    assert "--session-db is no longer supported" in result.stderr
+    assert "AssertionError" not in result.stderr
+
+
+@pytest.mark.parametrize("dispatch,argv", [
+    ("main._run_oneshot_from_args", ["-z", "test"]),
+    ("main.cmd_chat", ["chat", "-q", "test"]),
+])
+def test_chat_launch_refuses_an_inherited_database_variable(tmp_path, dispatch, argv):
+    """A chat launch ignores the variable (its gateway owns the store), so it is refused, not dropped."""
+    program = _REFUSAL_PROGRAM.replace("ARGV", repr(argv)).replace("DISPATCH", dispatch)
+    result, _home, target = _run_dispatch(
+        tmp_path, program, extra_env={"HERMES_SESSION_DB_PATH": str(tmp_path / "other.db")})
+
+    assert result.returncode == 2, result.stderr
+    assert "HERMES_SESSION_DB_PATH is set" in result.stderr
+    assert "AssertionError" not in result.stderr
+    assert not target.exists()
+
+
+def test_non_chat_command_refuses_session_db_through_main(tmp_path):
+    """`hermes --session-db X <any command>` must not run the command against the profile store."""
+    program = '''
+import os, sys
+from hermes_cli import main
+def ran(*args, **kwargs):
+    raise AssertionError("the command ran before --session-db was refused")
+main._prepare_agent_startup = ran
+sys.argv = ["hermes", "--session-db", os.environ["TARGET_DB"], "sessions", "list"]
+main.main()
+'''
+    result, _home, target = _run_dispatch(tmp_path, program)
+
+    assert result.returncode == 2, result.stderr
+    assert "--session-db is no longer supported" in result.stderr
+    assert "AssertionError" not in result.stderr
+    assert not target.exists()
+
+
+def test_version_does_not_bypass_the_refusal(tmp_path):
+    program = '''
+import os, sys
+from hermes_cli import main
+def ran(*args, **kwargs):
+    raise AssertionError("--version ran before --session-db was refused")
+main.cmd_version = ran
+sys.argv = ["hermes", "--session-db", os.environ["TARGET_DB"], "--version"]
+main.main()
+'''
+    result, _home, _target = _run_dispatch(tmp_path, program)
+
+    assert result.returncode == 2, result.stderr
+    assert "--session-db is no longer supported" in result.stderr
+    assert "AssertionError" not in result.stderr
+
+
+def test_non_chat_command_keeps_the_database_variable(tmp_path):
+    """Control through main(): outside chat launches the variable is not refused, so a gateway
+    the operator starts with it set still reaches its handler."""
+    program = '''
+import sys
+from hermes_cli import main
+main._prepare_agent_startup = lambda args: None
+def handler(args):
+    print("HANDLER-RAN")
+    return 0
+real_parse = main._parse_cli_args
+def parse(parser, subparsers, argv):
+    args = real_parse(parser, subparsers, argv)
+    args.func = handler
+    return args
+main._parse_cli_args = parse
+sys.argv = ["hermes", "gateway", "status"]
+main.main()
+'''
+    result, _home, _target = _run_dispatch(
+        tmp_path, program, extra_env={"HERMES_SESSION_DB_PATH": str(tmp_path / "other.db")})
+
     assert result.returncode == 0, result.stderr
+    assert "HANDLER-RAN" in result.stdout
+    assert "HERMES_SESSION_DB_PATH" not in result.stderr

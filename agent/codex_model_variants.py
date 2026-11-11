@@ -83,7 +83,24 @@ def reconcile_codex_access_program_extra_body(
     return body
 
 
-def codex_access_program_cache_identity(text: str, model: Optional[str]) -> str:
-    """Keep standard and access-program prompt-cache routing distinct."""
-    program = codex_access_program_for_model(model)
+def codex_access_program_cache_identity(text: str, model: Optional[str],
+                                        access_program: Optional[str] = None) -> str:
+    """Keep standard and access-program prompt-cache routing distinct. ``access_program`` is the
+    program the request actually sends when the session's Daybreak switch added it."""
+    program = access_program or codex_access_program_for_model(model)
     return f"{text}\0access_program={program}" if program else text
+
+
+def toggled_access_program(agent: object, request_overrides: Optional[dict] = None) -> Optional[str]:
+    """The access program upstream's per-request Daybreak switch (``apply_daybreak``) adds to THIS
+    request, or None (switch off, wrong route, or the account catalog does not list the model).
+
+    The Responses transport strips any ``access_programs.cyber`` an explicit ``-daybreak-blue`` route
+    does not own; the caller passes this value so the switch's own, catalog-checked program survives
+    while a raw ``request_overrides`` program still does not."""
+    from agent.codex_service_tiers import apply_daybreak
+
+    probe: dict = {"model": (request_overrides or {}).get("model", getattr(agent, "model", ""))}
+    apply_daybreak(agent, probe)
+    programs = (probe.get("extra_body") or {}).get("access_programs") or {}
+    return programs.get("cyber") if isinstance(programs, dict) else None

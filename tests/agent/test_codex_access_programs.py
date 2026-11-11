@@ -221,7 +221,7 @@ def test_codex_client_builder_tags_real_gateway_client(monkeypatch):
     )
     monkeypatch.setattr(
         "agent.auxiliary_client._resolve_codex_credential_and_base",
-        lambda: ("fixture", "https://gateway.example/codex"),
+        lambda *_args, **_kwargs: ("fixture", "https://gateway.example/codex"),
     )
     monkeypatch.setattr("agent.auxiliary_client._create_openai_client", lambda **_kwargs: real_client)
 
@@ -236,7 +236,7 @@ def test_codex_client_builder_tags_real_gateway_client(monkeypatch):
 def test_codex_client_builder_probe_mode_does_not_require_dynamic_attributes(monkeypatch):
     monkeypatch.setattr(
         "agent.auxiliary_client._resolve_codex_credential_and_base",
-        lambda: ("fixture", "https://gateway.example/codex"),
+        lambda *_args, **_kwargs: ("fixture", "https://gateway.example/codex"),
     )
 
     with aux_probe_mode():
@@ -264,3 +264,25 @@ def test_daybreak_suffix_preserves_model_effort_identity():
 def test_invalid_or_legacy_daybreak_aliases_are_not_stripped(model):
     assert codex_access_program_for_model(model) is None
     assert strip_codex_access_program_suffix(model) == model
+
+
+def test_daybreak_switch_program_survives_but_raw_override_does_not(monkeypatch):
+    """Upstream's Daybreak switch and the fork's explicit routes share ``access_programs.cyber``."""
+    import agent.codex_service_tiers as tiers
+    from agent.codex_model_variants import toggled_access_program
+
+    def fake_apply(agent, overrides):
+        if agent.daybreak:
+            overrides["extra_body"] = {"access_programs": {"cyber": "daybreak_blue"}}
+    monkeypatch.setattr(tiers, "apply_daybreak", fake_apply)
+    raw = {"extra_body": {"access_programs": {"cyber": "daybreak_blue"}}}
+
+    def wire(daybreak):
+        switch = toggled_access_program(SimpleNamespace(model="gpt-6-sol", daybreak=daybreak), raw)
+        return ResponsesApiTransport().build_kwargs(
+            "gpt-6-sol", [{"role": "user", "content": "hi"}], provider="openai-codex", base_url=CODEX_BASE,
+            is_codex_backend=True, request_overrides=raw, toggled_access_program=switch,
+        )
+
+    assert wire(True)["extra_body"]["access_programs"] == {"cyber": "daybreak_blue"}
+    assert "access_programs" not in wire(False).get("extra_body", {})

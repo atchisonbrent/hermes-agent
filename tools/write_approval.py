@@ -81,12 +81,14 @@ def review_config():
     """Explicit opt-in; malformed configured gates fail closed at the caller."""
     # The general loader can return defaults/last-known-good on parse errors.
     # A persistence authorization gate must not use that fallback.
-    from utils import fast_safe_load
-    try:
-        with (get_hermes_home() / "config.yaml").open(encoding="utf-8") as stream:
-            raw = fast_safe_load(stream)
+    from hermes_cli.config_backend import ConfigBackendUnavailable, read_config_doc
+    try:  # raises like open + fast_safe_load: no last-known-good fallback
+        raw = read_config_doc(get_hermes_home() / "config.yaml")
     except FileNotFoundError:
         raw = {}
+    except ConfigBackendUnavailable as exc:
+        # A SystemExit by design; here it must become a refused write, not an aborted turn.
+        raise _ReviewRefusal("Config backend unavailable") from exc
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
@@ -790,7 +792,9 @@ def _review_context(subsystem, payload, source, config, *, omitted_source_result
     # Version the behavioral config as well, without exporting its contents
     # (config may contain credentials). A change during review defers apply.
     cfg_path = get_hermes_home() / "config.yaml"
-    cfg_data = cfg_path.read_bytes() if cfg_path.exists() else b""
+    # Byte-exact on purpose: any edit during review (comments included) must defer the apply.
+    cfg_data = (cfg_path.read_bytes()  # config-reader: ok — byte-exact change fence, not a settings read
+                if cfg_path.exists() else b"")  # config-reader: ok — same fence; absent file hashes as empty
     context["config_version"] = hashlib.sha256(cfg_data).hexdigest()
     if subsystem == SKILLS:
         from tools.skill_manager_tool import _find_skill, _resolve_skill_dir, _validate_name
