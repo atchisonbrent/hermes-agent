@@ -4,6 +4,7 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 
 import functools
 import os
+import sys
 from typing import Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
@@ -186,7 +187,17 @@ def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None
     upper = name.upper()
     if name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST:
         return True
+    if upper in _configured_source_token_env():
+        return True
     return upper in (_registered_adapter_secret_env() if _registered is None else _registered)
+
+
+def _configured_source_token_env() -> frozenset:
+    """Token variables enabled secret sources are configured with (a custom ``access_token_env``),
+    recorded by ``apply_all`` in any profile; the bundled defaults are in the static list. Read only
+    if the source registry is loaded: no source has run otherwise, and this is called per variable."""
+    registry = sys.modules.get("agent.secret_sources.registry")
+    return registry.configured_token_env_names() if registry is not None else frozenset()
 
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``

@@ -43,6 +43,10 @@ _SCOPED_SOURCES: dict[str, dict[str, SecretSource]] = _registry._scoped_provider
 _BUILTINS_LOADED = False
 _REGISTRY_LOCK = _registry._lock
 
+# Token variable names of every source enabled in any profile (names only; the child-environment
+# policy strips them like the bundled defaults it lists statically).
+_TOKEN_ENV_NAMES: set[str] = set()
+
 # (module, class, label) for the bundled sources, in registration order.
 _BUILTIN_SOURCES = (
     ("agent.secret_sources.bitwarden", "BitwardenSource", "Bitwarden"),
@@ -270,6 +274,11 @@ def _ordered_enabled_sources(secrets_cfg: dict, *, scope: Optional[str] = None) 
     return enabled
 
 
+def configured_token_env_names() -> frozenset:
+    """Upper-cased token variable names of every source :func:`apply_all` found enabled."""
+    return frozenset(_TOKEN_ENV_NAMES)
+
+
 def enabled_source_names(secrets_cfg: dict, home_path: Path) -> frozenset:
     """Names of the sources :func:`apply_all` would fetch for *home_path* right now (registered
     and enabled). A source missing here was removed or disabled, so a value it injected earlier
@@ -387,6 +396,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     enabled = _ordered_enabled_sources(secrets_cfg, scope=hermes_home_key(home_path))
     if not enabled:
         return report
+    _TOKEN_ENV_NAMES.update(n.upper() for n in (s.token_env(_section(secrets_cfg, s.name)) for s in enabled) if n)
 
     preserve_raw = secrets_cfg.get("preserve_existing")
     preserve = frozenset(n.strip() for n in preserve_raw if isinstance(n, str) and n.strip()
