@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.compression_marker import _COMPRESSION_MARKER_ARTIFACT_RE
+from agent.known_secret_values import scrub_known_secrets
 from agent.message_metadata import stamp_message_timestamp
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
@@ -458,6 +459,9 @@ def make_tool_result_message(
     """
     # Replay-recovery callers bypass the executor's canonical-id helper, so normalize here too.
     tool_call_id = _normalize_tool_call_id(tool_call_id)
+    # Every tool result (built-in, MCP, plugin, error) becomes model context here: mask the values
+    # the process knows to be secret. Exact-value only, so no tool's own redaction policy changes.
+    content = scrub_known_secrets(content)
     # Elision notice is appended to the RAW content first, THEN wrapped, so it sits inside
     # the untrusted block next to the data it describes — once, at construction (cache-safe).
     wrapped = _maybe_wrap_untrusted(name, _maybe_append_elision_notice(name, content))
