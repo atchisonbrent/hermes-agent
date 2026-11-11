@@ -886,15 +886,15 @@ def _mask_control_split_tokens(text: str, mask_fn) -> str:
     a match can never cross into another line's unrelated text.
 
     A credential like ``sk-abc\\x1bdef456…`` or ``ghp_abc\\n123def…`` has its token body interrupted, so the
-    contiguous _PREFIX_RE cannot match it and the secret leaks verbatim (issue #77484). ``EXA_API_KEY=*** is
-    rejected).
+    contiguous matcher misses it and the secret leaks verbatim (issue #77484). Uses the masking pass's
+    matcher, so a split key glued to an identifier (``backup-sk-…``) is caught like a contiguous one.
     """
     stripped = _CONTROL_CHARS_RE.sub("", text)
-    if stripped == text or not _PREFIX_RE.search(stripped):  # prefix miss: skip the per-char map below
+    if stripped == text or not _PREFIX_SUB_RE.search(stripped):  # prefix miss: skip the per-char map below
         return text
     orig_idx = [i for i, c in enumerate(text) if not _CONTROL_CHARS_RE.match(c)]
     out, matches = list(text), []
-    for m in _PREFIX_RE.finditer(stripped):
+    for m in _PREFIX_SUB_RE.finditer(stripped):
         start_orig = orig_idx[m.start(1)]
         end_orig = orig_idx[m.end(1) - 1] + 1
         span = text[start_orig:end_orig]
@@ -904,10 +904,10 @@ def _mask_control_split_tokens(text: str, mask_fn) -> str:
         # between a token and prose, so there the join proceeds regardless.
         if ("\n" in span or "\r" in span) and _PREFIX_RE.search(span):
             continue
-        # Reject spans containing a non-token char (``sk_abc…\nTAVILY_API_KEY=``
-        # matched across lines) and matches running into a ``KEY=`` name.
+        # Reject spans containing a non-token char (``sk_abc…\nTAVILY_API_KEY=`` matched across lines),
+        # matches running into a ``KEY=`` name, and a glued non-secret (``backup-sk-learn`` stays whole).
         if (all(c in _TOKEN_BODY_CHARS or _CONTROL_CHARS_RE.match(c) for c in span)
-                and (end_orig >= len(text) or text[end_orig] != "=")):
+                and (end_orig >= len(text) or text[end_orig] != "=") and _mask_prefix_match(m, lambda _t: "") != m.group(0)):
             matches.append((start_orig, end_orig, mask_fn(m.group(1))))
     for start_orig, end_orig, replacement in reversed(matches):
         out[start_orig:end_orig] = list(replacement)
