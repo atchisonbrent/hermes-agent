@@ -773,7 +773,7 @@ def load_hermes_dotenv(
     # reads imports native extensions the updater must not map.
     if external:
         from agent.known_secret_values import log_uncovered_names, register_environment_credentials
-        register_environment_credentials(home_path, dict(os.environ))
+        register_environment_credentials(home_path, os.environ)  # snapshotted inside its guard
         log_uncovered_names(home_path)
 
     # config.yaml owns terminal.*, but the override=True loads above let a stale TERMINAL_ENV=docker in

@@ -14,6 +14,12 @@ not always belong to the profile that is bound when it is scrubbed: a cross-prof
 returns another profile's stored rows, and background-process heartbeats run on a timer thread bound to
 no profile. Masking a sibling profile's value in this profile's output is the safe failure, and the
 per-home keys keep a later narrowing possible.
+
+An all-digit value is masked only where it is not part of a longer number. A bare JSON number equal to
+an all-digit secret is still masked, which leaves that JSON invalid; ``security.known_secret_exempt_keys``
+is the remedy for such a key. Known limits: base64 wrapped across lines and doubly JSON-escaped text are
+not matched; text nested deeper than the walk limit is left as it is; every distinct batch rebuilds the
+whole matcher, and repeated registration recomputes forms before finding nothing new.
 """
 
 from __future__ import annotations
@@ -33,8 +39,8 @@ logger = logging.getLogger(__name__)
 # Shorter values are not registered: an 8-character floor keeps exact matching from masking ordinary
 # words and numbers. Their names are reported once (``log_uncovered_names``) so the gap is visible.
 MIN_VALUE_LENGTH = 8
-# Encoded forms are derived, and a short one (the base64 of a value's first few bytes) can occur in
-# unrelated output. They are registered only from this length; the raw value is always covered.
+# The base64 of a value's whole 3-byte groups is a partial encoding, and a short one can occur in
+# unrelated output: it is registered only from this length. Complete encodings are always registered.
 MIN_DERIVED_FORM_LENGTH = 16
 
 # A secrets manager also holds addresses, identities and settings. Masking a hostname or a model name
@@ -47,6 +53,9 @@ _NON_SECRET_SUFFIXES = (
 _CONFIG_EXEMPT_KEY = "known_secret_exempt_keys"  # security.<this>: extra key names never registered
 _IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
 _WALK_MAX_DEPTH = 64
+_KEY_ENV_FIELDS = frozenset({"key_env", "api_key_env", "keyEnv", "apiKeyEnv"})  # config credential pointers
+_DIGITS = re.compile(r"[0-9]+")
+_config_unreadable_logged = False
 
 
 class _Registry:
@@ -80,10 +89,18 @@ def is_exempt_name(name: str, extra: frozenset = frozenset()) -> bool:
 
 
 def _read_config(home) -> dict:
+    global _config_unreadable_logged
+    from hermes_cli.config_backend import ConfigBackendUnavailable, read_config_doc_readonly
     try:
-        from hermes_cli.config_backend import read_config_doc_readonly
         doc = read_config_doc_readonly(Path(home) / "config.yaml")
-    except Exception:  # health: allow BLE001 -- no readable config: no exemptions, no key_env names
+    except FileNotFoundError:
+        return {}
+    # A backend outage is a SystemExit by design; here it only means no exemptions and no key_env names.
+    except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- registration never raises
+        if not _config_unreadable_logged:
+            _config_unreadable_logged = True
+            logger.warning("Exact-value secret redaction: config unreadable (%s); keys named by key_env are "
+                           "not masked", type(exc).__name__)
         return {}
     return doc if isinstance(doc, dict) else {}
 
@@ -97,18 +114,18 @@ def _config_exempt_names(home) -> frozenset:
 
 
 def configured_key_env_names(home) -> set[str]:
-    """Variable names *home*'s config.yaml reads provider API keys from (``key_env`` / ``api_key_env``
-    of the main model, ``providers``, ``custom_providers`` and ``fallback_providers`` entries)."""
-    config = _read_config(home)
-    providers = config.get("providers")
-    entries = [config.get("model"), *(providers.values() if isinstance(providers, dict) else ())]
-    for key in ("custom_providers", "fallback_providers"):
-        if isinstance(config.get(key), list):
-            entries.extend(config[key])
-    names = set()
-    for entry in entries:
-        if isinstance(entry, dict):
-            names.update(str(entry.get(k)).strip() for k in ("key_env", "api_key_env") if entry.get(k))
+    """Variable names *home*'s config.yaml reads credentials from: every ``key_env`` / ``api_key_env``
+    (or camelCase alias) at any depth, so auxiliary tasks, legacy ``fallback_model`` and provider
+    aliases count like the main model."""
+    names, stack = set(), [_read_config(home)]
+    while stack:
+        node = stack.pop()
+        items = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()
+        for key, value in items:
+            if key in _KEY_ENV_FIELDS and isinstance(value, str) and value.strip():
+                names.add(value.strip())
+            elif isinstance(value, (dict, list)):
+                stack.append(value)
     return names
 
 
@@ -124,12 +141,14 @@ def _forms(value: str) -> set[str]:
     encodes a newline). Raises ``UnicodeEncodeError`` for a value with lone surrogates."""
     raw = value.encode("utf-8")
     quoted = quote(value, safe="")
-    derived = {json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1], quoted,
-               re.sub(r"%[0-9A-F]{2}", lambda m: m.group(0).lower(), quoted)}
+    forms = {value, json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1], quoted,
+             re.sub(r"%[0-9A-F]{2}", lambda m: m.group(0).lower(), quoted)}
     for encode in (base64.b64encode, base64.urlsafe_b64encode):
         encoded = encode(raw).decode("ascii")
-        derived.update((encoded, encoded.rstrip("="), encoded[: len(raw) // 3 * 4]))
-    return {value} | {f for f in derived if len(f) >= MIN_DERIVED_FORM_LENGTH}
+        forms.update((encoded, encoded.rstrip("=")))
+        if len(prefix := encoded[: len(raw) // 3 * 4]) >= MIN_DERIVED_FORM_LENGTH:
+            forms.add(prefix)
+    return forms
 
 
 def _trie_regex(node: dict) -> str:
@@ -221,14 +240,23 @@ def _register(home, values: dict) -> None:
 
 def register_environment_credentials(home, environ: Mapping[str, str]) -> None:
     """Register the credentials in *environ*: the variables the child-environment policy strips from
-    model-run commands as credentials (what is a credential for stripping is one for masking), plus
-    the provider keys *home*'s config names through ``key_env``. Never by name keyword alone: a
-    ``MAX_TOKENS`` count or an ``SSH_AUTH_SOCK`` path is not a credential."""
+    model-run commands as credentials (what is a credential for stripping is one for masking, including
+    *home*'s own platform plugins' secrets), the keys *home*'s config names through ``key_env``, and the
+    names *home*'s own ``.env`` defines that the redactor treats as a credential assignment (its name
+    test and its value-shape gate: a ``MAX_TOKENS`` count or an ``SSH_AUTH_SOCK`` path is not one).
+    Never a keyword sweep of the whole environment. Values come from *environ*."""
     try:
         environ = dict(environ)
-        from tools.environments.local_env_policy import credential_env_values
-        values = credential_env_values(environ)
+        if home is None:
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+        from agent.redact import _should_redact_assignment
+        from agent.secret_scope import load_env_file
+        from tools.environments.local_env_policy import credential_env_values, is_non_secret_env
+        values = credential_env_values(environ, home)
         values.update((n, environ[n]) for n in configured_key_env_names(home) if n in environ)
+        values.update((n, environ[n]) for n in load_env_file(Path(home) / ".env") if n in environ
+                      and not is_non_secret_env(n) and _should_redact_assignment(n, environ[n], check_keyword=True))
     except Exception as exc:  # health: allow BLE001 -- registration must never abort startup
         logger.warning("Exact-value secret redaction: environment credentials not read (%s)", type(exc).__name__)
         return
@@ -241,7 +269,22 @@ def redact_known_secret_values(text: str) -> str:
     if matcher is None or not isinstance(text, str) or not text:
         return text
     pattern, markers = matcher
-    return pattern.sub(lambda m: markers[m.group(0)], text)
+
+    def _replace(m: re.Match) -> str:
+        found = m.group(0)
+        if _DIGITS.fullmatch(found) and _in_longer_number(text, m.start(), m.end()):
+            return found
+        return markers[found]
+
+    return pattern.sub(_replace, text)
+
+
+def _in_longer_number(text: str, start: int, end: int) -> bool:
+    """A digit run at ``text[start:end]`` continues a number: an adjacent digit, or a decimal point
+    with a digit beyond it."""
+    before, after = text[max(0, start - 2):start], text[end:end + 2]
+    return (before[-1:].isdigit() or (before[-1:] == "." and before[:1].isdigit())
+            or after[:1].isdigit() or (after[:1] == "." and after[1:].isdigit()))
 
 
 def map_text_leaves(value: Any, fn: Callable[[str], str], _depth: int = 0) -> Any:

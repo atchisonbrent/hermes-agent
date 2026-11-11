@@ -100,6 +100,62 @@ def test_source_access_token_is_registered(synthetic_source):
         "token " + MARK.format("SYNTHETIC_SOURCE_TOKEN")
 
 
+def test_a_fetched_value_and_the_bootstrap_token_under_one_name_are_both_masked(synthetic_source):
+    synthetic_source["SYNTHETIC_SOURCE_TOKEN"] = "synthetic-value-stored-in-the-source"
+    _apply({"SYNTHETIC_SOURCE_TOKEN": "synthetic-bootstrap-token-value"})
+    mark = MARK.format("SYNTHETIC_SOURCE_TOKEN")
+    assert redact_sensitive_text("synthetic-value-stored-in-the-source synthetic-bootstrap-token-value") == \
+        f"{mark} {mark}"
+
+
+def test_a_source_whose_token_name_raises_still_registers_its_values(synthetic_source, monkeypatch, caplog):
+    from agent.secret_sources.base import SecretSource
+
+    def _broken(self, cfg):
+        raise ValueError("synthetic malformed token config")
+
+    monkeypatch.setattr(SecretSource, "token_env", _broken)
+    synthetic_source["SERVICE_SIGNING_TOKEN"] = "synthetic-fetched-value"
+    with caplog.at_level("WARNING"):
+        _apply()
+    assert redact_sensitive_text("synthetic-fetched-value") == MARK.format("SERVICE_SIGNING_TOKEN")
+    assert any("synthetic" in r.getMessage() and "token variable" in r.getMessage() for r in caplog.records)
+
+
+def test_a_config_backend_outage_is_unreadable_config_not_an_exit(monkeypatch, caplog):
+    from hermes_cli import config_backend
+
+    def _down(path):
+        raise config_backend.ConfigBackendUnavailable("synthetic backend outage")
+
+    monkeypatch.setattr(config_backend, "read_config_doc_readonly", _down)
+    monkeypatch.setattr(ksv, "_config_unreadable_logged", False)
+    with caplog.at_level("WARNING", logger=ksv.__name__):
+        ksv.register_known_secrets(None, {"SERVICE_TOKEN": "synthetic-outage-value"})
+        ksv.register_known_secrets(None, {"OTHER_TOKEN": "synthetic-second-value"})
+    assert redact_sensitive_text("synthetic-outage-value") == MARK.format("SERVICE_TOKEN")
+    assert [r.getMessage() for r in caplog.records if "key_env" in r.getMessage()] != []
+    assert len([r for r in caplog.records if "config unreadable" in r.getMessage()]) == 1
+
+
+def test_an_environment_that_changes_while_read_does_not_raise(caplog):
+    from collections.abc import Mapping
+
+    class _Vanishing(Mapping):  # the name is listed, then gone when its value is read
+        def __iter__(self):
+            return iter(["OPENROUTER_API_KEY"])
+
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, name):
+            raise KeyError(name)
+
+    with caplog.at_level("WARNING", logger=ksv.__name__):
+        ksv.register_environment_credentials(get_hermes_home(), _Vanishing())
+    assert any("not read" in r.getMessage() for r in caplog.records)
+
+
 def test_encoded_forms_are_masked_whole():
     value = 'synthetic/secret+value=with "quote" é~?'
     ksv.register_known_secrets(None, {"SERVICE_PASSWORD": value})
@@ -122,10 +178,29 @@ def test_encoded_forms_are_masked_whole():
     assert len(out) - len(MARK.format("SERVICE_PASSWORD")) <= 4
 
 
-def test_short_derived_forms_are_not_registered():
-    ksv.register_known_secrets(None, {"SHORT_TOKEN": "q7Rk2vLp"})  # 8 characters: raw form only
-    other = base64.b64encode(b"q7Rk2vXX").decode()  # shares the encoding of the first six bytes
-    assert redact_sensitive_text(f"q7Rk2vLp {other}") == f"{MARK.format('SHORT_TOKEN')} {other}"
+def test_complete_encodings_of_a_short_value_are_masked_but_not_its_partial_prefix():
+    ksv.register_known_secrets(None, {"SHORT_TOKEN": "q7Rk2vLp"})  # 8 characters: the shortest registrable
+    full = base64.b64encode(b"q7Rk2vLp").decode()
+    assert len(full) < ksv.MIN_DERIVED_FORM_LENGTH
+    for form in (full, full.rstrip("=")):
+        assert redact_sensitive_text(f"<{form}>") == f"<{MARK.format('SHORT_TOKEN')}>", form
+    other = base64.b64encode(b"q7Rk2vXX").decode()  # shares the 8-character encoding of the first six bytes
+    assert redact_sensitive_text(f"<{other}>") == f"<{other}>"
+
+
+def test_an_all_digit_value_is_masked_only_outside_a_longer_number():
+    ksv.register_known_secrets(None, {"SERVICE_PASSCODE": "73914628"})
+    mark = MARK.format("SERVICE_PASSCODE")
+    longer = "9739146280 73914628.5 1.73914628"
+    assert redact_sensitive_text(longer) == longer
+    assert redact_sensitive_text("code 73914628, v73914628 and 73914628.") == f"code {mark}, v{mark} and {mark}."
+
+
+def test_image_parts_are_returned_as_the_same_object():
+    ksv.register_known_secrets(None, {"SERVICE_TOKEN": "synthetic-image-adjacent"})
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,synthetic-image-adjacent"}}
+    out = ksv.scrub_known_secrets([{"type": "text", "text": "see synthetic-image-adjacent"}, image])
+    assert out[1] is image and out[0]["text"] == "see " + MARK.format("SERVICE_TOKEN")
 
 
 def test_known_values_are_masked_with_redact_secrets_off(monkeypatch):
@@ -226,6 +301,67 @@ def test_unmatched_text_is_returned_unchanged_and_cheaply():
     assert ksv.redact_known_secret_values(text + values["SYNTH_7_TOKEN"]) == text + MARK.format("SYNTH_7_TOKEN")
 
 
+def _load_profile(monkeypatch, config: str, entries: dict, plugin_secret: str | None = None) -> None:
+    """Write a profile's config.yaml, .env and optionally a user platform plugin, then run the loader."""
+    from hermes_cli import env_loader
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(config, encoding="utf-8")
+    (home / ".env").write_text("".join(f"{k}={v}\n" for k, v in entries.items()), encoding="utf-8")
+    if plugin_secret:
+        plugin = home / "plugins" / "platforms" / "chatx"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text(
+            f"name: chatx\nkind: platform\nrequires_env:\n  - name: {plugin_secret}\n    password: true\n",
+            encoding="utf-8")
+    for name in entries:
+        monkeypatch.setenv(name, "")  # restored (removed) after the test
+    env_loader.reset_secret_source_cache()
+    env_loader.load_hermes_dotenv(hermes_home=home)
+
+
+class TestDeclarationClasses:
+    """Each way a profile declares a credential that the static blocklist does not list, through the
+    loader (no value is registered directly)."""
+
+    VALUE = "synthetic-declared-credential-x9"
+
+    @pytest.mark.parametrize("config", [
+        "auxiliary:\n  compression:\n    key_env: TEAM_SUMMARY_LLM\n",
+        "fallback_model:\n  provider: custom\n  key_env: TEAM_SUMMARY_LLM\n",
+        "providers:\n  team:\n    apiKeyEnv: TEAM_SUMMARY_LLM\n",
+        "custom_providers:\n  - name: team\n    keyEnv: TEAM_SUMMARY_LLM\n",
+    ], ids=["auxiliary-task", "legacy-fallback-model", "provider-alias", "custom-provider-alias"])
+    def test_a_key_env_pointer_at_any_depth(self, monkeypatch, config):
+        _load_profile(monkeypatch, config, {"TEAM_SUMMARY_LLM": self.VALUE})
+        assert redact_sensitive_text(self.VALUE) == MARK.format("TEAM_SUMMARY_LLM")
+
+    def test_a_credential_named_in_the_profiles_own_env_file(self, monkeypatch):
+        _load_profile(monkeypatch, "{}\n", {"SYNTH_WEBHOOK_SECRET": self.VALUE})
+        assert redact_sensitive_text(self.VALUE) == MARK.format("SYNTH_WEBHOOK_SECRET")
+
+    def test_a_secret_declared_by_the_profiles_platform_plugin(self, monkeypatch):
+        _load_profile(monkeypatch, "{}\n", {"CHATX_BRIDGE_CODE": self.VALUE}, plugin_secret="CHATX_BRIDGE_CODE")
+        assert redact_sensitive_text(self.VALUE) == MARK.format("CHATX_BRIDGE_CODE")
+
+    def test_an_env_file_entry_outside_the_file_is_not_swept(self, monkeypatch):
+        monkeypatch.setenv("SYNTH_SHELL_SECRET", self.VALUE)  # secret-named, but not in this profile's .env
+        _load_profile(monkeypatch, "{}\n", {"SYNTH_DISPLAY_LABEL": "synthetic-label"})
+        assert redact_sensitive_text(self.VALUE) == self.VALUE
+
+
+@pytest.mark.parametrize("name, value", [
+    ("OPENAI_ORGANIZATION", "org-synthetic-team-identifier"),
+    ("OPENAI_ORG_ID", "org-synthetic-team-identifier"),
+    ("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/synthetic/service-account.json"),
+])
+def test_isolation_only_variables_are_not_credentials(name, value):
+    from tools.environments.local_env_policy import _is_provider_env_blocklisted, credential_env_values
+    assert _is_provider_env_blocklisted(name)  # stripped from children for isolation
+    assert credential_env_values({name: value, "OPENROUTER_API_KEY": "synthetic-provider-key"}) == {
+        "OPENROUTER_API_KEY": "synthetic-provider-key"}
+
+
 class TestEnvironmentCredentials:
     """The environment feed registers what the child-environment policy strips as a credential and
     the provider keys config names via ``key_env``; nothing by name keyword alone."""
@@ -234,10 +370,6 @@ class TestEnvironmentCredentials:
 
     @pytest.fixture
     def loaded(self, monkeypatch):
-        from hermes_cli import env_loader
-        home = get_hermes_home()
-        home.mkdir(parents=True, exist_ok=True)
-        (home / "config.yaml").write_text("model:\n  key_env: SYNTH_ENDPOINT_KEY\n", encoding="utf-8")
         entries = {
             "OPENROUTER_API_KEY": self.PROVIDER,  # on the provider blocklist
             "SYNTH_ENDPOINT_KEY": self.CUSTOM,  # named by model.key_env
@@ -247,11 +379,7 @@ class TestEnvironmentCredentials:
             "OPENAI_BASE_URL": "https://llm.example.invalid/v1",  # blocklisted, exempt suffix
             "TELEGRAM_HOME_CHANNEL": "-100123456789",  # blocklisted, declared non-secret
         }
-        (home / ".env").write_text("".join(f"{k}={v}\n" for k, v in entries.items()), encoding="utf-8")
-        for name in entries:
-            monkeypatch.setenv(name, "")  # restored (removed) after the test
-        env_loader.reset_secret_source_cache()
-        env_loader.load_hermes_dotenv(hermes_home=home)
+        _load_profile(monkeypatch, "model:\n  key_env: SYNTH_ENDPOINT_KEY\n", entries)
         return entries
 
     def test_credentials_are_masked_in_a_non_env_dump_command(self, loaded):

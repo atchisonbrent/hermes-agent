@@ -202,6 +202,7 @@ def _reset_registry_for_tests() -> None:
     with _REGISTRY_LOCK:
         _registry.reset_for_tests()
         _SOURCE_ORIGINS.clear()
+        _TOKEN_ENV_NAMES.clear()
         _BUILTINS_LOADED = False
 
 
@@ -396,7 +397,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     enabled = _ordered_enabled_sources(secrets_cfg, scope=hermes_home_key(home_path))
     if not enabled:
         return report
-    _TOKEN_ENV_NAMES.update(n.upper() for n in (s.token_env(_section(secrets_cfg, s.name)) for s in enabled) if n)
+    _TOKEN_ENV_NAMES.update(n.upper() for n in (_token_env(s, _section(secrets_cfg, s.name)) for s in enabled) if n)
 
     preserve_raw = secrets_cfg.get("preserve_existing")
     preserve = frozenset(n.strip() for n in preserve_raw if isinstance(n, str) and n.strip()
@@ -428,6 +429,16 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     # in tool output matches no pattern) and the access token each source authenticates with.
     from agent.known_secret_values import register_known_secrets
     for source, cfg, result in fetches:
-        token_env = source.token_env(cfg)
-        register_known_secrets(home_path, {**result.secrets, **({token_env: env.get(token_env, "")} if token_env else {})})
+        register_known_secrets(home_path, result.secrets)
+        if token_env := _token_env(source, cfg):  # its own batch: a fetched value under that name is kept too
+            register_known_secrets(home_path, {token_env: env.get(token_env, "")})
     return report
+
+
+def _token_env(source: SecretSource, cfg: dict) -> Optional[str]:
+    """``source.token_env(cfg)``; a third-party source that raises is logged and has none."""
+    try:
+        return source.token_env(cfg)
+    except Exception:  # health: allow BLE001 -- one source's bad config must not stop the others' registration
+        logger.warning("Secret source %s: token variable name unavailable", source.name, exc_info=True)
+        return None
