@@ -49,6 +49,9 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "HERMES_ANON_API_SECRET", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
     "HERMES_DASHBOARD_BASIC_AUTH_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
     "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_MEET_REALTIME_KEY",
+    # The bundled secret sources' access tokens (``SecretSource.default_token_env``): one token lists
+    # every value in the store (``bws secret list``). Each source hands it to its own CLI explicitly.
+    "BWS_ACCESS_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN",
 })
 
 
